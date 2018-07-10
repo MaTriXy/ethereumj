@@ -19,13 +19,11 @@ package org.ethereum.core;
 
 import org.ethereum.config.CommonConfig;
 import org.ethereum.config.SystemProperties;
-import org.ethereum.config.blockchain.FrontierConfig;
 import org.ethereum.core.genesis.GenesisLoader;
 import org.ethereum.crypto.ECKey;
 import org.ethereum.crypto.HashUtil;
 import org.ethereum.datasource.inmem.HashMapDB;
 import org.ethereum.datasource.NoDeleteSource;
-import org.ethereum.db.ByteArrayWrapper;
 import org.ethereum.db.IndexedBlockStore;
 import org.ethereum.db.RepositoryRoot;
 import org.ethereum.listener.EthereumListenerAdapter;
@@ -514,7 +512,7 @@ public class ImportLightTest {
 
             // checking balance of not existed address should take
             // less that gas limit
-            Assert.assertEquals(21508, spent);
+            Assert.assertEquals(21532, spent);
         }
 
         {
@@ -681,22 +679,19 @@ public class ImportLightTest {
         int cnt = 1;
 
         final CallTransaction.Function function = a.contract.getByName("set");
-        new Thread(new Runnable() {
-            @Override
-            public void run() {
-                int cnt = 1;
-                while (cnt++ > 0) {
-                    try {
-                        bc.generatePendingTransactions();
+        new Thread(() -> {
+            int cnt1 = 1;
+            while (cnt1++ > 0) {
+                try {
+                    bc.generatePendingTransactions();
 //                    byte[] encode = function.encode(cnt % 32, cnt);
 //                    Transaction callTx1 = bc.createTransaction(new ECKey(), 0, a.getAddress(), BigInteger.ZERO, encode);
 //                    bc.getPendingState().addPendingTransaction(callTx1);
 //                    Transaction callTx2 = bc.createTransaction(, 0, a.getAddress(), BigInteger.ZERO, encode);
 //                    bc.getPendingState().addPendingTransaction(callTx);
-                        Thread.sleep(10);
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                    }
+                    Thread.sleep(10);
+                } catch (Exception e) {
+                    e.printStackTrace();
                 }
             }
         }).start();
@@ -834,7 +829,7 @@ public class ImportLightTest {
                         "      mstore(0x120, v)" +
                         "      mstore(0x140, r)" +
                         "      mstore(0x160, s)" +
-                        "      callcode(0x50000, 0x01, 0x0, 0x100, 0x80, 0x200, 0x220)" + // call ecrecover
+                        "      let ret := callcode(0x50000, 0x01, 0x0, 0x100, 0x80, 0x200, 0x220)" + // call ecrecover
                         "      return(0x200, 0x20)" +
                         "    }" +
                         "  }" +
@@ -844,7 +839,7 @@ public class ImportLightTest {
         SolidityContract a = bc.submitNewContract(contractA, "A");
         bc.createBlock();
 
-        ECKey key = ECKey.fromPrivate(BigInteger.ONE);
+        ECKey key = ECKey.DUMMY;
         byte[] hash = new byte[32];
         ECKey.ECDSASignature signature = key.sign(hash);
 
@@ -907,7 +902,7 @@ public class ImportLightTest {
 
         blockchain.byTest = true;
 
-        PendingStateImpl pendingState = new PendingStateImpl(listener, blockchain);
+        PendingStateImpl pendingState = new PendingStateImpl(listener);
 
         pendingState.setBlockchain(blockchain);
         blockchain.setPendingState(pendingState);
@@ -918,10 +913,10 @@ public class ImportLightTest {
         track.commit();
         repository.commit();
 
-        blockStore.saveBlock(genesis, genesis.getCumulativeDifficulty(), true);
+        blockStore.saveBlock(genesis, genesis.getDifficultyBI(), true);
 
         blockchain.setBestBlock(genesis);
-        blockchain.setTotalDifficulty(genesis.getCumulativeDifficulty());
+        blockchain.setTotalDifficulty(genesis.getDifficultyBI());
 
         return blockchain;
     }

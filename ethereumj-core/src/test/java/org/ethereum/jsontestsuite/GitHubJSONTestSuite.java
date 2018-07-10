@@ -17,9 +17,14 @@
  */
 package org.ethereum.jsontestsuite;
 
+import org.codehaus.jackson.map.ObjectMapper;
+import org.codehaus.jackson.type.JavaType;
 import org.ethereum.config.BlockchainNetConfig;
+import org.ethereum.config.SystemProperties;
 import org.ethereum.config.blockchain.*;
 import org.ethereum.config.net.BaseNetConfig;
+import org.ethereum.config.net.MainNetConfig;
+import org.ethereum.core.BlockHeader;
 import org.ethereum.jsontestsuite.suite.*;
 import org.ethereum.jsontestsuite.suite.runners.TransactionTestRunner;
 import org.json.simple.JSONObject;
@@ -35,6 +40,8 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.util.*;
 
+import static org.junit.Assert.assertEquals;
+
 /**
  * Test file specific for tests maintained in the GitHub repository
  * by the Ethereum DEV team. <br/>
@@ -47,7 +54,7 @@ public class GitHubJSONTestSuite {
 
 
     protected static void runGitHubJsonVMTest(String json, String testName) throws ParseException {
-        Assume.assumeFalse("Online test is not available", json.equals(""));
+        Assume.assumeFalse("Online test is not available", json.isEmpty());
 
         JSONParser parser = new JSONParser();
         JSONObject testSuiteObj = (JSONObject) parser.parse(json);
@@ -75,14 +82,8 @@ public class GitHubJSONTestSuite {
         }
     }
 
-    protected static void runGitHubJsonVMTest(String json) throws ParseException {
-        Set<String> excluded = new HashSet<>();
-        runGitHubJsonVMTest(json, excluded);
-    }
-
-
-    protected static void runGitHubJsonVMTest(String json, Set<String> excluded) throws ParseException {
-        Assume.assumeFalse("Online test is not available", json.equals(""));
+    public static void runGitHubJsonVMTest(String json) throws ParseException {
+        Assume.assumeFalse("Online test is not available", json.isEmpty());
 
         JSONParser parser = new JSONParser();
         JSONObject testSuiteObj = (JSONObject) parser.parse(json);
@@ -90,20 +91,9 @@ public class GitHubJSONTestSuite {
         TestSuite testSuite = new TestSuite(testSuiteObj);
         Iterator<TestCase> testIterator = testSuite.iterator();
 
-        for (TestCase testCase : testSuite.getAllTests()) {
-
-            String prefix = "    ";
-            if (excluded.contains(testCase.getName())) prefix = "[X] ";
-
-            logger.info(prefix + testCase.getName());
-        }
-
-
         while (testIterator.hasNext()) {
 
             TestCase testCase = testIterator.next();
-            if (excluded.contains(testCase.getName()))
-                continue;
 
             TestRunner runner = new TestRunner();
             List<String> result = runner.runTestCase(testCase);
@@ -134,7 +124,7 @@ public class GitHubJSONTestSuite {
 
 
     protected static void runGitHubJsonBlockTest(String json, Set<String> excluded) throws ParseException, IOException {
-        Assume.assumeFalse("Online test is not available", json.equals(""));
+        Assume.assumeFalse("Online test is not available", json.isEmpty());
 
         BlockTestSuite testSuite = new BlockTestSuite(json);
         Set<String> testCases = testSuite.getTestCases().keySet();
@@ -206,24 +196,15 @@ public class GitHubJSONTestSuite {
         return result;
     }
 
-    public static void runGitHubJsonTransactionTest(String json, Set<String> excluded) throws IOException, ParseException {
+    public static void runGitHubJsonTransactionTest(String json) throws IOException {
 
         TransactionTestSuite transactionTestSuite = new TransactionTestSuite(json);
         Map<String, TransactionTestCase> testCases = transactionTestSuite.getTestCases();
         Map<String, Boolean> summary = new HashMap<>();
 
-
-        for (String testCase : testCases.keySet()) {
-            if ( excluded.contains(testCase))
-                logger.info(" [X] " + testCase);
-            else
-                logger.info("     " + testCase);
-        }
-
         Set<String> testNames = transactionTestSuite.getTestCases().keySet();
         for (String testName : testNames){
 
-            if (excluded.contains(testName)) continue;
             String output = String.format("*  running: %s  *", testName);
             String line = output.replaceAll(".", "*");
 
@@ -257,6 +238,81 @@ public class GitHubJSONTestSuite {
         Assert.assertTrue(fails == 0);
     }
 
+    static void runDifficultyTest(BlockchainNetConfig config, String file, String commitSHA) throws IOException {
+
+        String json = JSONReader.loadJSONFromCommit(file, commitSHA);
+
+        DifficultyTestSuite testSuite = new DifficultyTestSuite(json);
+
+        SystemProperties.getDefault().setBlockchainConfig(config);
+
+        try {
+            for (DifficultyTestCase testCase : testSuite.getTestCases()) {
+
+                logger.info("Running {}\n", testCase.getName());
+
+                BlockHeader current = testCase.getCurrent();
+                BlockHeader parent = testCase.getParent();
+
+                assertEquals(testCase.getExpectedDifficulty(), current.calcDifficulty
+                        (SystemProperties.getDefault().getBlockchainConfig(), parent));
+            }
+        } finally {
+            SystemProperties.getDefault().setBlockchainConfig(MainNetConfig.INSTANCE);
+        }
+    }
+
+    static void runCryptoTest(String file, String commitSHA) throws IOException {
+        String json = JSONReader.loadJSONFromCommit(file, commitSHA);
+
+        ObjectMapper mapper = new ObjectMapper();
+        JavaType type = mapper.getTypeFactory().
+                constructMapType(HashMap.class, String.class, CryptoTestCase.class);
+
+
+        HashMap<String , CryptoTestCase> testSuite =
+                mapper.readValue(json, type);
+
+        for (String key : testSuite.keySet()){
+            logger.info("executing: " + key);
+            testSuite.get(key).execute();
+        }
+    }
+
+    static void runTrieTest(String file, String commitSHA, boolean secure) throws IOException {
+
+        String json = JSONReader.loadJSONFromCommit(file, commitSHA);
+
+        TrieTestSuite testSuite = new TrieTestSuite(json);
+
+        for (TrieTestCase testCase : testSuite.getTestCases()) {
+
+            logger.info("Running {}\n", testCase.getName());
+
+            String expectedRoot = testCase.getRoot();
+            String actualRoot = testCase.calculateRoot(secure);
+
+            assertEquals(expectedRoot, actualRoot);
+        }
+    }
+
+    static void runABITest(String file, String commitSHA) throws IOException {
+
+        String json = JSONReader.loadJSONFromCommit(file, commitSHA);
+
+        ABITestSuite testSuite = new ABITestSuite(json);
+
+        for (ABITestCase testCase : testSuite.getTestCases()) {
+
+            logger.info("Running {}\n", testCase.getName());
+
+            String expected = testCase.getResult();
+            String actual = testCase.getEncoded();
+
+            assertEquals(expected, actual);
+        }
+    }
+
     public enum Network {
 
         Frontier,
@@ -269,7 +325,8 @@ public class GitHubJSONTestSuite {
         // Transition networks
         FrontierToHomesteadAt5,
         HomesteadToDaoAt5,
-        HomesteadToEIP150At5;
+        HomesteadToEIP150At5,
+        EIP158ToByzantiumAt5;
 
         public BlockchainNetConfig getConfig() {
             switch (this) {
@@ -293,6 +350,11 @@ public class GitHubJSONTestSuite {
                 case HomesteadToEIP150At5: return new BaseNetConfig() {{
                     add(0, new HomesteadConfig());
                     add(5, new Eip150HFConfig(new HomesteadConfig()));
+                }};
+
+                case EIP158ToByzantiumAt5: return new BaseNetConfig() {{
+                    add(0, new Eip160HFConfig(new HomesteadConfig()));
+                    add(5, new ByzantiumConfig(new HomesteadConfig()));
                 }};
 
                 default: throw new IllegalArgumentException("Unknown network value: " + this.name());

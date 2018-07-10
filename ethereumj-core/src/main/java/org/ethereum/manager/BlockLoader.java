@@ -30,14 +30,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.io.FileInputStream;
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.text.DateFormat;
-import java.text.SimpleDateFormat;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
-import java.util.concurrent.*;
+import java.util.function.Function;
 
 @Component
 public class BlockLoader {
@@ -57,7 +56,7 @@ public class BlockLoader {
 
     Scanner scanner = null;
 
-    DateFormat df = new SimpleDateFormat("HH:mm:ss.SSSS");
+    DateTimeFormatter df = DateTimeFormatter.ofPattern("HH:mm:ss.SSSS");
 
     private void blockWork(Block block) {
         if (block.getNumber() >= blockchain.getBlockStore().getBestBlock().getNumber() || blockchain.getBlockStore().getBlockByHash(block.getHash()) == null) {
@@ -70,7 +69,7 @@ public class BlockLoader {
             ImportResult result = blockchain.tryToConnect(block);
 
             if (block.getNumber() % 10 == 0) {
-                System.out.println(df.format(new Date()) + " Imported block " + block.getShortDescr() + ": " + result + " (prework: "
+                System.out.println(LocalDateTime.now().format(df) + " Imported block " + block.getShortDescr() + ": " + result + " (prework: "
                         + exec1.getQueue().size() + ", work: " + exec2.getQueue().size() + ", blocks: " + exec1.getOrderMap().size() + ") in " +
                         (System.currentTimeMillis() - s) + " ms");
             }
@@ -86,31 +85,21 @@ public class BlockLoader {
     ExecutorPipeline<Block, ?> exec2;
 
     public void loadBlocks() {
-        exec1 = new ExecutorPipeline(8, 1000, true, new Functional.Function<Block, Block>() {
-            @Override
-            public Block apply(Block b) {
-                if (b.getNumber() >= blockchain.getBlockStore().getBestBlock().getNumber()) {
-                    for (Transaction tx : b.getTransactionsList()) {
-                        tx.getSender();
-                    }
+        exec1 = new ExecutorPipeline(8, 1000, true, (Function<Block, Block>) b -> {
+            if (b.getNumber() >= blockchain.getBlockStore().getBestBlock().getNumber()) {
+                for (Transaction tx : b.getTransactionsList()) {
+                    tx.getSender();
                 }
-                return b;
             }
-        }, new Functional.Consumer<Throwable>() {
-            @Override
-            public void accept(Throwable throwable) {
-                logger.error("Unhandled exception: ", throwable);
-            }
-        });
+            return b;
+            }, throwable -> logger.error("Unhandled exception: ", throwable)
+        );
 
-        exec2 = exec1.add(1, 1000, new Functional.Consumer<Block>() {
-            @Override
-            public void accept(Block block) {
-                try {
-                    blockWork(block);
-                } catch (Exception e) {
-                    e.printStackTrace();
-                }
+        exec2 = exec1.add(1, 1000, block -> {
+            try {
+                blockWork(block);
+            } catch (Exception e) {
+                e.printStackTrace();
             }
         });
 

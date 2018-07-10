@@ -19,15 +19,17 @@ package org.ethereum.vm;
 
 import org.ethereum.core.Bloom;
 import org.ethereum.crypto.HashUtil;
+import org.ethereum.datasource.MemSizeEstimator;
 import org.ethereum.util.RLP;
 import org.ethereum.util.RLPElement;
 import org.ethereum.util.RLPItem;
 import org.ethereum.util.RLPList;
 
-import org.spongycastle.util.encoders.Hex;
-
 import java.util.ArrayList;
 import java.util.List;
+
+import static org.ethereum.datasource.MemSizeEstimator.ByteArrayEstimator;
+import static org.ethereum.util.ByteUtil.toHexString;
 
 /**
  * @author Roman Mandeleil
@@ -38,9 +40,6 @@ public class LogInfo {
     byte[] address = new byte[]{};
     List<DataWord> topics = new ArrayList<>();
     byte[] data = new byte[]{};
-
-    /* Log info in encoded form */
-    private byte[] rlpEncoded;
 
     public LogInfo(byte[] rlp) {
 
@@ -58,8 +57,6 @@ public class LogInfo {
             byte[] topic = topic1.getRLPData();
             this.topics.add(new DataWord(topic));
         }
-
-        rlpEncoded = rlp;
     }
 
     public LogInfo(byte[] address, List<DataWord> topics, byte[] data) {
@@ -116,18 +113,21 @@ public class LogInfo {
         topicsStr.append("[");
 
         for (DataWord topic : topics) {
-            String topicStr = Hex.toHexString(topic.getData());
+            String topicStr = toHexString(topic.getData());
             topicsStr.append(topicStr).append(" ");
         }
         topicsStr.append("]");
 
 
         return "LogInfo{" +
-                "address=" + Hex.toHexString(address) +
+                "address=" + toHexString(address) +
                 ", topics=" + topicsStr +
-                ", data=" + Hex.toHexString(data) +
+                ", data=" + toHexString(data) +
                 '}';
     }
 
-
+    public static final MemSizeEstimator<LogInfo> MemEstimator = log ->
+            ByteArrayEstimator.estimateSize(log.address) +
+            ByteArrayEstimator.estimateSize(log.data) +
+            log.topics.size() * DataWord.MEM_SIZE + 16;
 }

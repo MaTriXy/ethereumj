@@ -20,12 +20,10 @@ package org.ethereum.vm;
 import org.ethereum.config.BlockchainConfig;
 import org.ethereum.config.SystemProperties;
 import org.ethereum.db.ContractDetails;
-import org.ethereum.vm.MessageCall.MsgType;
 import org.ethereum.vm.program.Program;
 import org.ethereum.vm.program.Stack;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.spongycastle.util.encoders.Hex;
 import org.springframework.beans.factory.annotation.Autowired;
 
 import java.math.BigInteger;
@@ -36,6 +34,7 @@ import java.util.List;
 import static org.ethereum.crypto.HashUtil.sha3;
 import static org.ethereum.util.ByteUtil.EMPTY_BYTE_ARRAY;
 import static org.ethereum.vm.OpCode.*;
+import static org.ethereum.util.ByteUtil.toHexString;
 
 /**
  * The Ethereum Virtual Machine (EVM) is responsible for initialization
@@ -81,7 +80,9 @@ public class VM {
     private static BigInteger _32_ = BigInteger.valueOf(32);
     private static final String logString = "{}    Op: [{}]  Gas: [{}] Deep: [{}]  Hint: [{}]";
 
-    private static BigInteger MAX_GAS = BigInteger.valueOf(Long.MAX_VALUE / 2);
+    // max mem size which couldn't be paid for ever
+    // used to reduce expensive BigInt arithmetic
+    private static BigInteger MAX_MEM_SIZE = BigInteger.valueOf(Integer.MAX_VALUE);
 
 
     /* Keeps track of the number of steps performed in this VM */
@@ -108,8 +109,8 @@ public class VM {
         long gasCost = 0;
 
         // Avoid overflows
-        if (newMemSize.compareTo(MAX_GAS) == 1) {
-            throw Program.Exception.gasOverflow(newMemSize, MAX_GAS);
+        if (newMemSize.compareTo(MAX_MEM_SIZE) > 0) {
+            throw Program.Exception.gasOverflow(newMemSize, MAX_MEM_SIZE);
         }
 
         // memory gas calc
@@ -163,6 +164,11 @@ public class VM {
                 case RETURNDATACOPY:
                 case RETURNDATASIZE:
                     if (!blockchainConfig.eip211()) {
+                        throw Program.Exception.invalidOpCode(program.getCurrentOp());
+                    }
+                    break;
+                case STATICCALL:
+                    if (!blockchainConfig.eip214()) {
                         throw Program.Exception.invalidOpCode(program.getCurrentOp());
                     }
                     break;
@@ -278,16 +284,18 @@ public class VM {
                 case CALL:
                 case CALLCODE:
                 case DELEGATECALL:
+                case STATICCALL:
 
                     gasCost = gasCosts.getCALL();
                     DataWord callGasWord = stack.get(stack.size() - 1);
 
                     DataWord callAddressWord = stack.get(stack.size() - 2);
 
-                    //check to see if account does not exist and is not a precompiled contract
+                    DataWord value = op.callHasValue() ?
+                            stack.get(stack.size() - 3) : DataWord.ZERO;
 
+                    //check to see if account does not exist and is not a precompiled contract
                     if (op == CALL) {
-                        DataWord value = stack.get(stack.size() - 3);
                         if (blockchainConfig.eip161()) {
                             if (isDeadAccount(program, callAddressWord.getLast20Bytes()) && !value.isZero()) {
                                 gasCost += gasCosts.getNEW_ACCT_CALL();
@@ -300,10 +308,10 @@ public class VM {
                     }
 
                     //TODO #POC9 Make sure this is converted to BigInteger (256num support)
-                    if (op != DELEGATECALL && !stack.get(stack.size() - 3).isZero() )
+                    if (!value.isZero() )
                         gasCost += gasCosts.getVT_CALL();
 
-                    int opOff = op == DELEGATECALL ? 3 : 4;
+                    int opOff = op.callHasValue() ? 4 : 3;
                     BigInteger in = memNeeded(stack.get(stack.size() - opOff), stack.get(stack.size() - opOff - 1)); // in offset+size
                     BigInteger out = memNeeded(stack.get(stack.size() - opOff - 2), stack.get(stack.size() - opOff - 3)); // out offset+size
                     gasCost += calcMemGas(gasCosts, oldMemSize, in.max(out), 0);
@@ -702,7 +710,7 @@ public class VM {
                     DataWord address = program.getOwnerAddress();
 
                     if (logger.isInfoEnabled())
-                        hint = "address: " + Hex.toHexString(address.getLast20Bytes());
+                        hint = "address: " + toHexString(address.getLast20Bytes());
 
                     program.stackPush(address);
                     program.step();
@@ -714,7 +722,7 @@ public class VM {
 
                     if (logger.isInfoEnabled())
                         hint = "address: "
-                                + Hex.toHexString(address.getLast20Bytes())
+                                + toHexString(address.getLast20Bytes())
                                 + " balance: " + balance.toString();
 
                     program.stackPush(balance);
@@ -725,7 +733,7 @@ public class VM {
                     DataWord originAddress = program.getOriginAddress();
 
                     if (logger.isInfoEnabled())
-                        hint = "address: " + Hex.toHexString(originAddress.getLast20Bytes());
+                        hint = "address: " + toHexString(originAddress.getLast20Bytes());
 
                     program.stackPush(originAddress);
                     program.step();
@@ -735,7 +743,7 @@ public class VM {
                     DataWord callerAddress = program.getCallerAddress();
 
                     if (logger.isInfoEnabled())
-                        hint = "address: " + Hex.toHexString(callerAddress.getLast20Bytes());
+                        hint = "address: " + toHexString(callerAddress.getLast20Bytes());
 
                     program.stackPush(callerAddress);
                     program.step();
@@ -780,9 +788,9 @@ public class VM {
                     byte[] msgData = program.getDataCopy(dataOffsetData, lengthData);
 
                     if (logger.isInfoEnabled())
-                        hint = "data: " + Hex.toHexString(msgData);
+                        hint = "data: " + toHexString(msgData);
 
-                    program.memorySave(memOffsetData.intValueSafe(), msgData);
+                    program.memorySave(memOffsetData.intValueSafe(), lengthData.intValueSafe(), msgData);
                     program.step();
                 }
                 break;
@@ -808,9 +816,9 @@ public class VM {
                     }
 
                     if (logger.isInfoEnabled())
-                        hint = "data: " + Hex.toHexString(msgData);
+                        hint = "data: " + toHexString(msgData);
 
-                    program.memorySave(memOffsetData.intValueSafe(), msgData);
+                    program.memorySave(memOffsetData.intValueSafe(), lengthData.intValueSafe(), msgData);
                     program.step();
                 }
                 break;
@@ -860,9 +868,9 @@ public class VM {
                         System.arraycopy(fullCode, codeOffset, codeCopy, 0, sizeToBeCopied);
 
                     if (logger.isInfoEnabled())
-                        hint = "code: " + Hex.toHexString(codeCopy);
+                        hint = "code: " + toHexString(codeCopy);
 
-                    program.memorySave(memOffset, codeCopy);
+                    program.memorySave(memOffset, lengthData, codeCopy);
                     program.step();
                 }
                 break;
@@ -897,7 +905,7 @@ public class VM {
                     DataWord coinbase = program.getCoinbase();
 
                     if (logger.isInfoEnabled())
-                        hint = "coinbase: " + Hex.toHexString(coinbase.getLast20Bytes());
+                        hint = "coinbase: " + toHexString(coinbase.getLast20Bytes());
 
                     program.stackPush(coinbase);
                     program.step();
@@ -974,6 +982,7 @@ public class VM {
                 case LOG3:
                 case LOG4: {
 
+                    if (program.isStaticCall()) throw new Program.StaticCallModificationException();
                     DataWord address = program.getOwnerAddress();
 
                     DataWord memStart = stack.pop();
@@ -1044,6 +1053,8 @@ public class VM {
                 }
                 break;
                 case SSTORE: {
+                    if (program.isStaticCall()) throw new Program.StaticCallModificationException();
+
                     DataWord addr = program.stackPop();
                     DataWord value = program.stackPop();
 
@@ -1153,7 +1164,7 @@ public class VM {
                     byte[] data = program.sweep(nPush);
 
                     if (logger.isInfoEnabled())
-                        hint = "" + Hex.toHexString(data);
+                        hint = "" + toHexString(data);
 
                     program.stackPush(data);
                 }
@@ -1163,6 +1174,8 @@ public class VM {
                 }
                 break;
                 case CREATE: {
+                    if (program.isStaticCall()) throw new Program.StaticCallModificationException();
+
                     DataWord value = program.stackPop();
                     DataWord inOffset = program.stackPop();
                     DataWord inSize = program.stackPop();
@@ -1180,11 +1193,15 @@ public class VM {
                 break;
                 case CALL:
                 case CALLCODE:
-                case DELEGATECALL: {
+                case DELEGATECALL:
+                case STATICCALL: {
                     program.stackPop(); // use adjustedCallGas instead of requested
                     DataWord codeAddress = program.stackPop();
-                    DataWord value = !op.equals(DELEGATECALL) ?
+                    DataWord value = op.callHasValue() ?
                             program.stackPop() : DataWord.ZERO;
+
+                    if (program.isStaticCall() && op == CALL && !value.isZero())
+                        throw new Program.StaticCallModificationException();
 
                     if( !value.isZero()) {
                         adjustedCallGas.add(new DataWord(gasCosts.getSTIPEND_CALL()));
@@ -1197,7 +1214,7 @@ public class VM {
                     DataWord outDataSize = program.stackPop();
 
                     if (logger.isInfoEnabled()) {
-                        hint = "addr: " + Hex.toHexString(codeAddress.getLast20Bytes())
+                        hint = "addr: " + toHexString(codeAddress.getLast20Bytes())
                                 + " gas: " + adjustedCallGas.shortHex()
                                 + " inOff: " + inDataOffs.shortHex()
                                 + " inSize: " + inDataSize.shortHex();
@@ -1210,14 +1227,13 @@ public class VM {
                     program.memoryExpand(outDataOffs, outDataSize);
 
                     MessageCall msg = new MessageCall(
-                            MsgType.fromOpcode(op),
-                            adjustedCallGas, codeAddress, value, inDataOffs, inDataSize,
+                            op, adjustedCallGas, codeAddress, value, inDataOffs, inDataSize,
                             outDataOffs, outDataSize);
 
                     PrecompiledContracts.PrecompiledContract contract =
                             PrecompiledContracts.getContractForAddress(codeAddress, blockchainConfig);
 
-                    if (op.equals(CALL)) {
+                    if (!op.callIsStateless()) {
                         program.getResult().addTouchAccount(codeAddress.getLast20Bytes());
                     }
 
@@ -1239,7 +1255,7 @@ public class VM {
                     program.setHReturn(hReturn);
 
                     if (logger.isInfoEnabled())
-                        hint = "data: " + Hex.toHexString(hReturn)
+                        hint = "data: " + toHexString(hReturn)
                                 + " offset: " + offset.value()
                                 + " size: " + size.value();
 
@@ -1252,12 +1268,14 @@ public class VM {
                 }
                 break;
                 case SUICIDE: {
+                    if (program.isStaticCall()) throw new Program.StaticCallModificationException();
+
                     DataWord address = program.stackPop();
                     program.suicide(address);
                     program.getResult().addTouchAccount(address.getLast20Bytes());
 
                     if (logger.isInfoEnabled())
-                        hint = "address: " + Hex.toHexString(program.getOwnerAddress().getLast20Bytes());
+                        hint = "address: " + toHexString(program.getOwnerAddress().getLast20Bytes());
 
                     program.stop();
                 }
@@ -1268,9 +1286,7 @@ public class VM {
 
             program.setPreviouslyExecutedOp(op.val());
 
-            if (logger.isInfoEnabled() && !op.equals(CALL)
-                    && !op.equals(CALLCODE)
-                    && !op.equals(CREATE))
+            if (logger.isInfoEnabled() && !op.isCall())
                 logger.info(logString, String.format("%5s", "[" + program.getPC() + "]"),
                         String.format("%-12s",
                                 op.name()), program.getGas().value(),
@@ -1350,16 +1366,16 @@ public class VM {
 
                     for (DataWord key : storageKeys) {
                         dumpLogger.trace("{} {}",
-                                Hex.toHexString(key.getNoLeadZeroesData()),
-                                Hex.toHexString(details.getStorage().get(key).getNoLeadZeroesData()));
+                                toHexString(key.getNoLeadZeroesData()),
+                                toHexString(details.getStorage().get(key).getNoLeadZeroesData()));
                     }
                 default:
                     break;
             }
-            String addressString = Hex.toHexString(program.getOwnerAddress().getLast20Bytes());
-            String pcString = Hex.toHexString(new DataWord(program.getPC()).getNoLeadZeroesData());
-            String opString = Hex.toHexString(new byte[]{op.val()});
-            String gasString = Hex.toHexString(program.getGas().getNoLeadZeroesData());
+            String addressString = toHexString(program.getOwnerAddress().getLast20Bytes());
+            String pcString = toHexString(new DataWord(program.getPC()).getNoLeadZeroesData());
+            String opString = toHexString(new byte[]{op.val()});
+            String gasString = toHexString(program.getGas().getNoLeadZeroesData());
 
             dumpLogger.trace("{} {} {} {}", addressString, pcString, opString, gasString);
         } else if (config.dumpStyle().equals("pretty")) {
@@ -1385,7 +1401,7 @@ public class VM {
             }
 
             int level = program.getCallDeep();
-            String contract = Hex.toHexString(program.getOwnerAddress().getLast20Bytes());
+            String contract = toHexString(program.getOwnerAddress().getLast20Bytes());
             String internalSteps = String.format("%4s", Integer.toHexString(program.getPC())).replace(' ', '0').toUpperCase();
             dumpLogger.trace("{} | {} | #{} | {} : {} | {} | -{} | {}x32",
                     level, contract, vmCounter, internalSteps, op,

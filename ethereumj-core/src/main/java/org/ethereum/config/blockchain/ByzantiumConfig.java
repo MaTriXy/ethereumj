@@ -1,11 +1,28 @@
+/*
+ * Copyright (c) [2016] [ <ether.camp> ]
+ * This file is part of the ethereumJ library.
+ *
+ * The ethereumJ library is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * The ethereumJ library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with the ethereumJ library. If not, see <http://www.gnu.org/licenses/>.
+ */
 package org.ethereum.config.blockchain;
 
 import org.ethereum.config.BlockchainConfig;
 import org.ethereum.config.Constants;
+import org.ethereum.config.ConstantsAdapter;
 import org.ethereum.core.Block;
 import org.ethereum.core.BlockHeader;
 import org.ethereum.core.Repository;
-import org.spongycastle.util.encoders.Hex;
 
 import java.math.BigInteger;
 
@@ -29,8 +46,23 @@ import static org.ethereum.util.BIUtil.max;
  */
 public class ByzantiumConfig extends Eip160HFConfig {
 
+    private final Constants constants;
+
     public ByzantiumConfig(BlockchainConfig parent) {
         super(parent);
+        constants = new ConstantsAdapter(super.getConstants()) {
+            private final BigInteger BLOCK_REWARD = new BigInteger("3000000000000000000");
+
+            @Override
+            public BigInteger getBLOCK_REWARD() {
+                return BLOCK_REWARD;
+            }
+        };
+    }
+
+    @Override
+    public Constants getConstants() {
+        return constants;
     }
 
     @Override
@@ -53,7 +85,7 @@ public class ByzantiumConfig extends Eip160HFConfig {
     }
 
     protected int getExplosion(BlockHeader curBlock, BlockHeader parent) {
-        int periodCount = (int) (curBlock.getNumber() / getConstants().getEXP_DIFFICULTY_PERIOD());
+        int periodCount = (int) (Math.max(0, curBlock.getNumber() - 3_000_000) / getConstants().getEXP_DIFFICULTY_PERIOD());
         return periodCount - 2;
     }
 
@@ -75,6 +107,26 @@ public class ByzantiumConfig extends Eip160HFConfig {
 
     @Override
     public boolean eip211() {
+        return true;
+    }
+
+    @Override
+    public boolean eip212() {
+        return true;
+    }
+
+    @Override
+    public boolean eip213() {
+        return true;
+    }
+
+    @Override
+    public boolean eip214() {
+        return true;
+    }
+
+    @Override
+    public boolean eip658() {
         return true;
     }
 }

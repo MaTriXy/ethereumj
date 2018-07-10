@@ -712,9 +712,8 @@ public class TrieTest {
         }
     }
 
-    @Ignore
     @Test
-    public void testMasiveDetermenisticUpdate() throws IOException, URISyntaxException {
+    public void testMassiveDeterministicUpdate() throws IOException, URISyntaxException {
 
         // should be root: cfd77c0fcb037adefce1f4e2eb94381456a4746379d2896bb8f309c620436d30
 
@@ -773,7 +772,7 @@ public class TrieTest {
 
         System.out.println("root_2:  => " + Hex.toHexString(trie2.getRootHash()));
 
-        assertEquals(trieSingle.getRootHash(), trie2.getRootHash());
+        assertArrayEquals(trieSingle.getRootHash(), trie2.getRootHash());
 
     }
 
@@ -1076,6 +1075,59 @@ public class TrieTest {
 
         assertArrayEquals(trie.get(Hex.decode("6e92718d00dae27b2a96f6853a0bf11ded08bc658b2e75904ca0344df5aff9ae")),
                 Hex.decode("00000000000000000000000000000000000000000000002f0000000000000000"));
+    }
+
+    @Test
+    public void testBugFix2() throws ParseException, IOException, URISyntaxException {
+
+        Source<byte[], byte[]> src = new HashMapDB<>();
+
+        // Create trie: root -> BranchNode (..., NodeValue (less than 32 bytes), ...)
+        TrieImpl trie = new TrieImpl(src);
+        trie.put(Hex.decode("0000000000000000000000000000000000000000000000000000000000000011"), Hex.decode("11"));
+        trie.put(Hex.decode("0000000000000000000000000000000000000000000000000000000000000022"), Hex.decode("22"));
+        trie.flush();
+
+        // Reset trie to refresh the nodes
+        trie = new TrieImpl(src, trie.getRootHash());
+
+        // Update trie: root -> dirty BranchNode (..., NodeValue (less than 32 bytes), ..., dirty NodeValue, ...)
+        trie.put(Hex.decode("0000000000000000000000000000000000000000000000000000000000000033"), Hex.decode("33"));
+
+        // BUG:
+        // In that case NodeValue (encoded as plain RLP list) isn't dirty
+        // while both rlp and hash fields are null, Node has been initialized with parsedRLP only
+        // Therefore any subsequent call to BranchNode.encode() fails with NPE
+
+        // FIX:
+        // Supply Node initialization with raw rlp value
+
+        assertEquals("36e350d9a1d9c02d5bc4539a05e51890784ea5d2b675a0b26725dbbdadb4d6e2", Hex.toHexString(trie.getRootHash()));
+    }
+
+    @Test
+    public void testBugFix3() throws ParseException, IOException, URISyntaxException {
+
+        HashMapDB<byte[]> src = new HashMapDB<>();
+
+        // Scenario:
+        // create trie with subtrie: ... -> kvNodeNode -> BranchNode() -> kvNodeValue1, kvNodeValue2
+        // remove kvNodeValue2, in that way kvNodeNode and kvNodeValue1 are going to be merged in a new kvNodeValue3
+
+        // BUG: kvNodeNode is not deleted from storage after the merge
+
+        TrieImpl trie = new TrieImpl(src);
+        trie.put(Hex.decode("0000000000000000000000000000000000000000000000000000000000011133"),
+                Hex.decode("0000000000000000000000000000000000000000000000000000000000000033"));
+        trie.put(Hex.decode("0000000000000000000000000000000000000000000000000000000000021244"),
+                Hex.decode("0000000000000000000000000000000000000000000000000000000000000044"));
+        trie.put(Hex.decode("0000000000000000000000000000000000000000000000000000000000011255"),
+                Hex.decode("0000000000000000000000000000000000000000000000000000000000000055"));
+        trie.flush();
+
+        trie.delete(Hex.decode("0000000000000000000000000000000000000000000000000000000000011255"));
+
+        assertFalse(src.getStorage().containsKey(Hex.decode("5152f9274abb8e61f3956ccd08d31e38bfa2913afd23bc13b5e7bb709ce7f603")));
     }
 
     @Ignore

@@ -20,13 +20,13 @@ package org.ethereum.sync;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.MoreExecutors;
+import org.apache.commons.collections4.queue.CircularFifoQueue;
 import org.ethereum.core.*;
 import org.ethereum.net.server.Channel;
-import org.ethereum.util.ByteArrayMap;
 import org.ethereum.validator.BlockHeaderValidator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.spongycastle.util.encoders.Hex;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -34,6 +34,7 @@ import java.util.concurrent.*;
 import static java.lang.Math.max;
 import static java.util.Collections.emptyList;
 import static java.util.Collections.singletonList;
+import static org.ethereum.util.ByteUtil.toHexString;
 
 /**
  * Created by Anton Nashatyrev on 27.10.2016.
@@ -46,7 +47,7 @@ public abstract class BlockDownloader {
     private int headerQueueLimit = 10000;
 
     // Max number of Blocks / Headers in one request
-    private static int MAX_IN_REQUEST = 192;
+    public static int MAX_IN_REQUEST = 192;
     private static int REQUESTS = 32;
 
     private BlockHeaderValidator headerValidator;
@@ -69,6 +70,11 @@ public abstract class BlockDownloader {
 
     private CountDownLatch stopLatch = new CountDownLatch(1);
 
+    protected String name = "BlockDownloader";
+
+    private long estimatedBlockSize = 0;
+    private final CircularFifoQueue<Long> lastBlockSizes = new CircularFifoQueue<>(10 * MAX_IN_REQUEST);
+
     public BlockDownloader(BlockHeaderValidator headerValidator) {
         this.headerValidator = headerValidator;
     }
@@ -76,6 +82,7 @@ public abstract class BlockDownloader {
     protected abstract void pushBlocks(List<BlockWrapper> blockWrappers);
     protected abstract void pushHeaders(List<BlockHeaderWrapper> headers);
     protected abstract int getBlockQueueFreeSize();
+    protected abstract int getMaxHeadersInQueue();
 
     protected void finishDownload() {}
 
@@ -91,29 +98,20 @@ public abstract class BlockDownloader {
         this.headersDownload = headersDownload;
     }
 
-    public void init(SyncQueueIfc syncQueue, final SyncPool pool) {
+    public void init(SyncQueueIfc syncQueue, final SyncPool pool, String name) {
         this.syncQueue = syncQueue;
         this.pool = pool;
+        this.name = name;
 
-        logger.info("Initializing BlockDownloader.");
+        logger.info("{}: Initializing BlockDownloader.", name);
 
         if (headersDownload) {
-            getHeadersThread = new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    headerRetrieveLoop();
-                }
-            }, "SyncThreadHeaders");
+            getHeadersThread = new Thread(this::headerRetrieveLoop, "SyncThreadHeaders");
             getHeadersThread.start();
         }
 
         if (blockBodiesDownload) {
-            getBodiesThread = new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    blockRetrieveLoop();
-                }
-            }, "SyncThreadBlocks");
+            getBodiesThread = new Thread(this::blockRetrieveLoop, "SyncThreadBlocks");
             getBodiesThread.start();
         }
     }
@@ -140,6 +138,10 @@ public abstract class BlockDownloader {
         return blockQueueLimit;
     }
 
+    public int getHeaderQueueLimit() {
+        return headerQueueLimit;
+    }
+
     public void setBlockQueueLimit(int blockQueueLimit) {
         this.blockQueueLimit = blockQueueLimit;
     }
@@ -150,9 +152,9 @@ public abstract class BlockDownloader {
             try {
                     if (hReq.isEmpty()) {
                         synchronized (this) {
-                            hReq = syncQueue.requestHeaders(MAX_IN_REQUEST, 128, headerQueueLimit);
+                            hReq = syncQueue.requestHeaders(MAX_IN_REQUEST, 128, getMaxHeadersInQueue());
                             if (hReq == null) {
-                                logger.info("Headers download complete.");
+                                logger.info("{}: Headers download complete.", name);
                                 headersDownloadComplete = true;
                                 if (!blockBodiesDownload) {
                                     finishDownload();
@@ -160,7 +162,7 @@ public abstract class BlockDownloader {
                                 }
                                 return;
                             }
-                            String l = "##########  New header requests (" + hReq.size() + "):\n";
+                            String l = "##########  " + name + ": New header requests (" + hReq.size() + "):\n";
                             for (SyncQueueIfc.HeadersRequest request : hReq) {
                                 l += "    " + request + "\n";
                             }
@@ -174,10 +176,10 @@ public abstract class BlockDownloader {
                         final Channel any = getAnyPeer();
 
                         if (any == null) {
-                            logger.debug("headerRetrieveLoop: No IDLE peers found");
+                            logger.debug("{} headerRetrieveLoop: No IDLE peers found", name);
                             break;
                         } else {
-                            logger.debug("headerRetrieveLoop: request headers (" + headersRequest.getStart() + ") from " + any.getNode());
+                            logger.debug("{} headerRetrieveLoop: request headers (" + headersRequest.toString() + ") from " + any.getNode(), name);
                             ListenableFuture<List<BlockHeader>> futureHeaders = headersRequest.getHash() == null ?
                                     any.getEthHandler().sendGetBlockHeaders(headersRequest.getStart(), headersRequest.getCount(), headersRequest.isReverse()) :
                                     any.getEthHandler().sendGetBlockHeaders(headersRequest.getHash(), headersRequest.getCount(), headersRequest.getStep(), headersRequest.isReverse());
@@ -192,10 +194,10 @@ public abstract class BlockDownloader {
 
                                     @Override
                                     public void onFailure(Throwable t) {
-                                        logger.debug("Error receiving headers. Dropping the peer.", t);
+                                        logger.debug("{}: Error receiving headers. Dropping the peer.", name, t);
                                         any.getEthHandler().dropConnection();
                                     }
-                                });
+                                }, MoreExecutors.directExecutor());
                                 it.remove();
                                 reqHeadersCounter++;
                             }
@@ -228,7 +230,7 @@ public abstract class BlockDownloader {
 
             @Override
             public void onFailure(Throwable t) {
-                logger.debug("Error receiving Blocks. Dropping the peer.", t);
+                logger.debug("{}: Error receiving Blocks. Dropping the peer.", name, t);
                 peer.getEthHandler().dropConnection();
             }
         }
@@ -241,16 +243,17 @@ public abstract class BlockDownloader {
                 }
 
                 if (bReqs.isEmpty() && headersDownloadComplete) {
-                    logger.info("Block download complete.");
+                    logger.info("{}: Block download complete.", name);
                     finishDownload();
                     downloadComplete = true;
                     return;
                 }
 
                 int blocksToAsk = getBlockQueueFreeSize();
-                if (blocksToAsk > MAX_IN_REQUEST) {
+                if (blocksToAsk >= MAX_IN_REQUEST) {
 //                    SyncQueueIfc.BlocksRequest bReq = syncQueue.requestBlocks(maxBlocks);
 
+                    boolean fewHeadersReqMode = false;
                     if (bReqs.size() == 1 && bReqs.get(0).getBlockHeaders().size() <= 3) {
                         // new blocks are better to request from the header senders first
                         // to get more chances to receive block body promptly
@@ -260,7 +263,9 @@ public abstract class BlockDownloader {
                                 ListenableFuture<List<Block>> futureBlocks =
                                         channel.getEthHandler().sendGetBlockBodies(singletonList(blockHeaderWrapper));
                                 if (futureBlocks != null) {
-                                    Futures.addCallback(futureBlocks, new BlocksCallback(channel));
+                                    Futures.addCallback(futureBlocks, new BlocksCallback(channel),
+                                            MoreExecutors.directExecutor());
+                                    fewHeadersReqMode = true;
                                 }
                             }
                         }
@@ -276,26 +281,35 @@ public abstract class BlockDownloader {
                         SyncQueueIfc.BlocksRequest blocksRequest = it.next();
                         Channel any = getAnyPeer();
                         if (any == null) {
-                            logger.debug("blockRetrieveLoop: No IDLE peers found");
+                            logger.debug("{} blockRetrieveLoop: No IDLE peers found", name);
                             break;
                         } else {
-                            logger.debug("blockRetrieveLoop: Requesting " + blocksRequest.getBlockHeaders().size() + " blocks from " + any.getNode());
+                            logger.debug("{} blockRetrieveLoop: Requesting " + blocksRequest.getBlockHeaders().size() + " blocks from " + any.getNode(), name);
                             ListenableFuture<List<Block>> futureBlocks =
                                     any.getEthHandler().sendGetBlockBodies(blocksRequest.getBlockHeaders());
                             blocksRequested += blocksRequest.getBlockHeaders().size();
                             if (futureBlocks != null) {
-                                Futures.addCallback(futureBlocks, new BlocksCallback(any));
+                                Futures.addCallback(futureBlocks, new BlocksCallback(any),
+                                        MoreExecutors.directExecutor());
                                 reqBlocksCounter++;
                                 it.remove();
                             }
                         }
                     }
+
+                    // Case when we have requested few headers and was not able
+                    // to remove request from the list in above cycle because
+                    // there were no idle peers or whatever
+                    if (fewHeadersReqMode && !bReqs.isEmpty()) {
+                        bReqs.clear();
+                    }
+
                     receivedBlocksLatch = new CountDownLatch(max(reqBlocksCounter - 2, 1));
+                    receivedBlocksLatch.await(1000, TimeUnit.MILLISECONDS);
                 } else {
-                    logger.debug("blockRetrieveLoop: BlockQueue is full");
-                    receivedBlocksLatch = new CountDownLatch(1);
+                    logger.debug("{} blockRetrieveLoop: BlockQueue is full", name);
+                    Thread.sleep(200);
                 }
-                receivedBlocksLatch.await(200, TimeUnit.MILLISECONDS);
             } catch (InterruptedException e) {
                 break;
             } catch (Exception e) {
@@ -317,8 +331,8 @@ public abstract class BlockDownloader {
         }
 
         synchronized (this) {
-            logger.debug("Adding new " + blocks.size() + " blocks to sync queue: " +
-                    blocks.get(0).getShortDescr() + " ... " + blocks.get(blocks.size() - 1).getShortDescr());
+            logger.debug("{}: Adding new " + blocks.size() + " blocks to sync queue: " +
+                    blocks.get(0).getShortDescr() + " ... " + blocks.get(blocks.size() - 1).getShortDescr(), name);
 
             List<Block> newBlocks = syncQueue.addBlocks(blocks);
 
@@ -328,8 +342,8 @@ public abstract class BlockDownloader {
             }
 
 
-            logger.debug("Pushing " + wrappers.size() + " blocks to import queue: " + (wrappers.isEmpty() ? "" :
-                    wrappers.get(0).getBlock().getShortDescr() + " ... " + wrappers.get(wrappers.size() - 1).getBlock().getShortDescr()));
+            logger.debug("{}: Pushing " + wrappers.size() + " blocks to import queue: " + (wrappers.isEmpty() ? "" :
+                    wrappers.get(0).getBlock().getShortDescr() + " ... " + wrappers.get(wrappers.size() - 1).getBlock().getShortDescr()), name);
 
             pushBlocks(wrappers);
         }
@@ -337,7 +351,8 @@ public abstract class BlockDownloader {
         receivedBlocksLatch.countDown();
 
         if (logger.isDebugEnabled()) logger.debug(
-                "Blocks waiting to be proceed: lastBlock.number: [{}]",
+                "{}: Blocks waiting to be proceed: lastBlock.number: [{}]",
+                name,
                 blocks.get(blocks.size() - 1).getNumber()
         );
     }
@@ -364,7 +379,7 @@ public abstract class BlockDownloader {
             if (!isValid(header)) {
 
                 if (logger.isDebugEnabled()) {
-                    logger.debug("Invalid header RLP: {}", Hex.toHexString(header.getEncoded()));
+                    logger.debug("{}: Invalid header RLP: {}", toHexString(header.getEncoded()), name);
                 }
 
                 return false;
@@ -382,7 +397,7 @@ public abstract class BlockDownloader {
 
         receivedHeadersLatch.countDown();
 
-        logger.debug("{} headers added", headers.size());
+        logger.debug("{}: {} headers added", name, headers.size());
 
         return true;
     }
@@ -416,4 +431,32 @@ public abstract class BlockDownloader {
         }
     }
 
+    /**
+     * Estimates block size in bytes.
+     * Block memory size can depend on the underlying logic,
+     * hence ancestors should call this method on their own,
+     * preferably after actions that impact on block memory size (like RLP parsing, signature recover) are done
+     */
+    protected void estimateBlockSize(BlockWrapper blockWrapper) {
+        synchronized (lastBlockSizes) {
+            lastBlockSizes.add(blockWrapper.estimateMemSize());
+            estimatedBlockSize = lastBlockSizes.stream().mapToLong(Long::longValue).sum() / lastBlockSizes.size();
+        }
+        logger.debug("{}: estimated block size: {}", name, estimatedBlockSize);
+    }
+
+    protected void estimateBlockSize(Collection<BlockWrapper> blockWrappers) {
+        if (blockWrappers.isEmpty())
+            return;
+
+        synchronized (lastBlockSizes) {
+            blockWrappers.forEach(b -> lastBlockSizes.add(b.estimateMemSize()));
+            estimatedBlockSize = lastBlockSizes.stream().mapToLong(Long::longValue).sum() / lastBlockSizes.size();
+        }
+        logger.debug("{}: estimated block size: {}", name, estimatedBlockSize);
+    }
+
+    public long getEstimatedBlockSize() {
+        return estimatedBlockSize;
+    }
 }

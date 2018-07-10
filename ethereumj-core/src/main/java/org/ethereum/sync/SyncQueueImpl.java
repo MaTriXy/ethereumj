@@ -23,18 +23,19 @@ import org.ethereum.core.BlockHeaderWrapper;
 import org.ethereum.core.Blockchain;
 import org.ethereum.db.ByteArrayWrapper;
 import org.ethereum.util.ByteArrayMap;
-import org.ethereum.util.Functional;
-import org.spongycastle.util.encoders.Hex;
 
 import java.util.*;
+import java.util.function.Function;
 
 import static java.lang.Math.min;
+import static org.ethereum.sync.BlockDownloader.MAX_IN_REQUEST;
+import static org.ethereum.util.ByteUtil.toHexString;
 
 /**
  * Created by Anton Nashatyrev on 27.05.2016.
  */
 public class SyncQueueImpl implements SyncQueueIfc {
-    static int MAX_CHAIN_LEN = 192;
+    static int MAX_CHAIN_LEN = MAX_IN_REQUEST;
 
     static class HeadersRequestImpl implements HeadersRequest {
         public HeadersRequestImpl(long start, int count, boolean reverse) {
@@ -81,7 +82,7 @@ public class SyncQueueImpl implements SyncQueueIfc {
         @Override
         public String toString() {
             return "HeadersRequest{" +
-                    (hash == null ? "start=" + getStart() : "hash=" + Hex.toHexString(hash).substring(0, 8))+
+                    (hash == null ? "start=" + getStart() : "hash=" + toHexString(hash).substring(0, 8))+
                     ", count=" + getCount() +
                     ", reverse=" + isReverse() +
                     ", step=" + getStep() +
@@ -188,7 +189,7 @@ public class SyncQueueImpl implements SyncQueueIfc {
 
     public SyncQueueImpl(Blockchain bc) {
         Block bestBlock = bc.getBestBlock();
-        long start = bestBlock.getNumber() - MAX_CHAIN_LEN;
+        long start = bestBlock.getNumber() - MAX_CHAIN_LEN + 1;
         start = start < 0 ? 0 : start;
         List<Block> initBlocks = new ArrayList<>();
         for (long i = start; i <= bestBlock.getNumber(); i++) {
@@ -446,7 +447,7 @@ public class SyncQueueImpl implements SyncQueueIfc {
         private Visitor<T> handler;
         boolean downUp = true;
 
-        public ChildVisitor(Functional.Function<HeaderElement, List<T>> handler) {
+        public ChildVisitor(Function<HeaderElement, List<T>> handler) {
 //            this.handler = handler;
         }
 

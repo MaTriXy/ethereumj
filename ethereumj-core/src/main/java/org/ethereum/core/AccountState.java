@@ -17,18 +17,19 @@
  */
 package org.ethereum.core;
 
+import org.ethereum.config.BlockchainConfig;
 import org.ethereum.config.SystemProperties;
 import org.ethereum.crypto.HashUtil;
+import org.ethereum.util.ByteUtil;
 import org.ethereum.util.FastByteComparisons;
 import org.ethereum.util.RLP;
 import org.ethereum.util.RLPList;
-
-import org.spongycastle.util.encoders.Hex;
 
 import java.math.BigInteger;
 
 import static org.ethereum.crypto.HashUtil.*;
 import static org.ethereum.util.FastByteComparisons.equal;
+import static org.ethereum.util.ByteUtil.toHexString;
 
 public class AccountState {
 
@@ -81,10 +82,8 @@ public class AccountState {
         this.rlpEncoded = rlpData;
 
         RLPList items = (RLPList) RLP.decode2(rlpEncoded).get(0);
-        this.nonce = items.get(0).getRLPData() == null ? BigInteger.ZERO
-                : new BigInteger(1, items.get(0).getRLPData());
-        this.balance = items.get(1).getRLPData() == null ? BigInteger.ZERO
-                : new BigInteger(1, items.get(1).getRLPData());
+        this.nonce = ByteUtil.bytesToBigInteger(items.get(0).getRLPData());
+        this.balance = ByteUtil.bytesToBigInteger(items.get(1).getRLPData());
         this.stateRoot = items.get(2).getRLPData();
         this.codeHash = items.get(3).getRLPData();
     }
@@ -136,6 +135,11 @@ public class AccountState {
         return rlpEncoded;
     }
 
+    public boolean isContractExist(BlockchainConfig blockchainConfig) {
+        return !FastByteComparisons.equal(codeHash, EMPTY_DATA_HASH) ||
+                !blockchainConfig.getConstants().getInitialNonce().equals(nonce);
+    }
+
     public boolean isEmpty() {
         return FastByteComparisons.equal(codeHash, EMPTY_DATA_HASH) &&
                 BigInteger.ZERO.equals(balance) &&
@@ -146,8 +150,8 @@ public class AccountState {
     public String toString() {
         String ret = "  Nonce: " + this.getNonce().toString() + "\n" +
                 "  Balance: " + getBalance() + "\n" +
-                "  State Root: " + Hex.toHexString(this.getStateRoot()) + "\n" +
-                "  Code Hash: " + Hex.toHexString(this.getCodeHash());
+                "  State Root: " + toHexString(this.getStateRoot()) + "\n" +
+                "  Code Hash: " + toHexString(this.getCodeHash());
         return ret;
     }
 }

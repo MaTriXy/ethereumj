@@ -31,19 +31,20 @@ import java.util.HashSet;
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
 public class GitHubBlockTest {
 
-    static String commitSHA = "74431cab7b8e8a0ccf457ad2fbc4b25f6c3e1f7f";
-    static String treeSHA = "f957bebb5d163da11656e7a18d0b95ee025e4ca2"; // https://github.com/ethereum/tests/tree/develop/BlockchainTests/
+    static String commitSHA = "7f638829311dfc1d341c1db85d8a891f57fa4da7";
+    static String treeSHA = "3f6a1117be5c0d6f801875118c7c580dc4200712"; // https://github.com/ethereum/tests/tree/develop/BlockchainTests/
     static GitHubJSONTestSuite.Network[] targetNets = {
             GitHubJSONTestSuite.Network.Frontier,
             GitHubJSONTestSuite.Network.Homestead,
             GitHubJSONTestSuite.Network.EIP150,
-            GitHubJSONTestSuite.Network.EIP158
+            GitHubJSONTestSuite.Network.EIP158,
+            GitHubJSONTestSuite.Network.Byzantium
     };
 
     static BlockchainTestSuite suite;
 
     @BeforeClass
-    public static void setup() {
+    public static void setup() throws IOException {
         suite = new BlockchainTestSuite(treeSHA, commitSHA, targetNets);
     }
 
@@ -53,7 +54,7 @@ public class GitHubBlockTest {
     // do not initialize BlockchainTestSuite to avoid unnecessary GitHub API hits
     public void bcSingleTest() throws IOException {
         BlockchainTestSuite.runSingle(
-                "bcBlockGasLimitTest/BlockGasLimit2p63m1.json", commitSHA, GitHubJSONTestSuite.Network.Frontier);
+                "bcWalletTest/wallet2outOf3txs2.json", commitSHA, GitHubJSONTestSuite.Network.Byzantium);
     }
 
 
@@ -110,8 +111,8 @@ public class GitHubBlockTest {
     }
 
     @Test
-    public void bcUncleHeaderValiditiy() throws IOException {
-        suite.runAll("bcUncleHeaderValiditiy");
+    public void bcUncleHeaderValidity() throws IOException {
+        suite.runAll("bcUncleHeaderValidity");
     }
 
     @Test

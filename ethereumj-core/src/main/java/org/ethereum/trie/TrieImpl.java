@@ -27,6 +27,8 @@ import org.ethereum.net.swarm.Key;
 import org.ethereum.util.FastByteComparisons;
 import org.ethereum.util.RLP;
 import org.ethereum.util.Value;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.spongycastle.util.encoders.Hex;
 
 import java.util.ArrayList;
@@ -39,6 +41,7 @@ import static org.ethereum.util.ByteUtil.EMPTY_BYTE_ARRAY;
 import static org.ethereum.util.RLP.EMPTY_ELEMENT_RLP;
 import static org.ethereum.util.RLP.encodeElement;
 import static org.ethereum.util.RLP.encodeList;
+import static org.ethereum.util.ByteUtil.toHexString;
 
 /**
  * Created by Anton Nashatyrev on 07.02.2017.
@@ -47,6 +50,8 @@ public class TrieImpl implements Trie<byte[]> {
     private final static Object NULL_NODE = new Object();
     private final static int MIN_BRANCHES_CONCURRENTLY = 3;
     private static ExecutorService executor;
+
+    private static final Logger logger = LoggerFactory.getLogger("state");
 
     public static ExecutorService getExecutor() {
         if (executor == null) {
@@ -93,6 +98,7 @@ public class TrieImpl implements Trie<byte[]> {
 
         private Node(RLP.LList parsedRlp) {
             this.parsedRlp = parsedRlp;
+            this.rlp = parsedRlp.getEncoded();
         }
 
         private Node(Object[] children) {
@@ -107,7 +113,8 @@ public class TrieImpl implements Trie<byte[]> {
 
         private void resolve() {
             if (!resolveCheck()) {
-                throw new RuntimeException("Invalid Trie state, can't resolve hash " + Hex.toHexString(hash));
+                logger.error("Invalid Trie state, can't resolve hash " + toHexString(hash));
+                throw new RuntimeException("Invalid Trie state, can't resolve hash " + toHexString(hash));
             }
         }
 
@@ -140,12 +147,7 @@ public class TrieImpl implements Trie<byte[]> {
                             if (encoded[i] == null) {
                                 final Node child = branchNodeGetChild(i);
                                 if (encodeCnt >= MIN_BRANCHES_CONCURRENTLY) {
-                                    encoded[i] = getExecutor().submit(new Callable<byte[]>() {
-                                        @Override
-                                        public byte[] call() throws Exception {
-                                            return child.encode(depth + 1, false);
-                                        }
-                                    });
+                                    encoded[i] = getExecutor().submit(() -> child.encode(depth + 1, false));
                                 } else {
                                     encoded[i] = child.encode(depth + 1, false);
                                 }
@@ -422,7 +424,7 @@ public class TrieImpl implements Trie<byte[]> {
 
         @Override
         public String toString() {
-            return getType() + (dirty ? " *" : "") + (hash == null ? "" : "(hash: " + Hex.toHexString(hash) + " )");
+            return getType() + (dirty ? " *" : "") + (hash == null ? "" : "(hash: " + toHexString(hash) + " )");
         }
     }
 
@@ -638,6 +640,7 @@ public class TrieImpl implements Trie<byte[]> {
             TrieKey newKey = newKvNode.kvNodeGetKey().concat(newChild.kvNodeGetKey());
             Node newNode = new Node(newKey, newChild.kvNodeGetValueOrNode());
             newChild.dispose();
+            newKvNode.dispose();
             return newNode;
         } else {
             // no compaction needed

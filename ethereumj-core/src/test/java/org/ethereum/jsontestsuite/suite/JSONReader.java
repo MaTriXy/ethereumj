@@ -18,6 +18,7 @@
 package org.ethereum.jsontestsuite.suite;
 
 import org.ethereum.config.SystemProperties;
+import org.ethereum.util.FileUtil;
 import org.json.simple.JSONArray;
 import org.json.simple.JSONObject;
 import org.json.simple.parser.JSONParser;
@@ -29,10 +30,11 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 
 import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.*;
 
-import org.apache.commons.codec.binary.Base64;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -40,37 +42,76 @@ public class JSONReader {
 
     private static Logger logger = LoggerFactory.getLogger("TCK-Test");
 
-    public static String loadJSON(String filename) {
-        String json = "";
-        if (!SystemProperties.getDefault().vmTestLoadLocal())
-            json = getFromUrl("https://raw.githubusercontent.com/ethereum/tests/develop/" + filename);
-        return json.isEmpty() ? getFromLocal(filename) : json;
+    static ExecutorService threadPool;
+
+    private static int MAX_RETRIES = 3;
+
+    public static List<String> loadJSONsFromCommit(List<String> filenames, final String shacommit) {
+
+        int threads = 16;
+        if (threadPool == null) {
+            threadPool = Executors.newFixedThreadPool(threads);
+        }
+
+        List<Future<String>> retF = new ArrayList<>();
+        for (final String filename : filenames) {
+            Future<String> f = threadPool.submit(() -> loadJSONFromCommit(filename, shacommit));
+            retF.add(f);
+        }
+
+        List<String> ret = new ArrayList<>();
+        for (Future<String> f : retF) {
+            try {
+                ret.add(f.get());
+            } catch (InterruptedException | ExecutionException e) {
+                throw new RuntimeException(String.format("Failed to retrieve %d files from commit %s",
+                        filenames.size(), shacommit), e);
+            }
+        }
+
+        return ret;
     }
 
-    public static String loadJSONFromCommit(String filename, String shacommit) {
+    public static String loadJSONFromCommit(String filename, String shacommit) throws IOException {
         String json = "";
-        if (!SystemProperties.getDefault().vmTestLoadLocal())
+        if (!SystemProperties.getDefault().githubTestsLoadLocal())
             json = getFromUrl("https://raw.githubusercontent.com/ethereum/tests/" + shacommit + "/" + filename);
         if (!json.isEmpty()) json = json.replaceAll("//", "data");
         return json.isEmpty() ? getFromLocal(filename) : json;
     }
 
-    public static String getFromLocal(String filename) {
-        System.out.println("Loading local file: " + filename);
-        try {
-            File vmTestFile = new File(filename);
-            if (!vmTestFile.exists()){
-                System.out.println(" Error: no file: " +filename);
-                System.exit(1);
-            }
-            return new String(Files.readAllBytes(vmTestFile.toPath()));
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-        return "";
+    public static String getFromLocal(String filename) throws IOException {
+
+        filename = SystemProperties.getDefault().githubTestsPath()
+                + System.getProperty("file.separator") + filename.replaceAll("/", System.getProperty("file.separator"));
+
+        logger.info("Loading local file: {}", filename);
+
+        return new String(Files.readAllBytes(Paths.get(filename)));
     }
 
     public static String getFromUrl(String urlToRead) {
+        String result = null;
+        for (int i = 0; i < MAX_RETRIES; ++i) {
+            try {
+                result = getFromUrlImpl(urlToRead);
+                break;
+            } catch (Exception ex) {
+                logger.debug(String.format("Failed to retrieve %s, retry %d/%d", urlToRead, (i + 1), MAX_RETRIES), ex);
+                if (i < (MAX_RETRIES - 1)) {
+                    try {
+                        Thread.sleep(2000);  // adding delay after fail
+                    } catch (InterruptedException e) {
+                    }
+                }
+            }
+        }
+        if (result == null) throw new RuntimeException(String.format("Failed to retrieve file from url %s", urlToRead));
+
+        return result;
+    }
+
+    private static String getFromUrlImpl(String urlToRead) throws Exception {
         URL url;
         HttpURLConnection conn;
         BufferedReader rd;
@@ -91,64 +132,31 @@ public class JSONReader {
             }
             rd.close();
         } catch (Throwable e) {
-            e.printStackTrace();
+            logger.debug("Failed to retrieve file.", e);
+            throw e;
         }
         return result.toString();
     }
 
-    public static String getTestBlobForTreeSha(String shacommit, String testcase){
+    public static List<String> listJsonBlobsForTreeSha(String sha, String testRoot) throws IOException {
 
-        String result = getFromUrl("https://api.github.com/repos/ethereum/tests/git/trees/" + shacommit);
+        if (SystemProperties.getDefault().githubTestsLoadLocal()) {
 
-        JSONParser parser = new JSONParser();
-        JSONObject testSuiteObj = null;
+            String path = SystemProperties.getDefault().githubTestsPath() +
+                    System.getProperty("file.separator") + testRoot.replaceAll("/", "");
 
-        List<String> fileNames = new ArrayList<String>();
-        try {
-            testSuiteObj = (JSONObject) parser.parse(result);
-            JSONArray tree = (JSONArray)testSuiteObj.get("tree");
+            List<String> files = FileUtil.recursiveList(path);
 
-            for (Object oEntry : tree) {
-                JSONObject entry = (JSONObject) oEntry;
-                String testName = (String) entry.get("path");
-                if ( testName.equals(testcase) ) {
-                    String blobresult = getFromUrl( (String) entry.get("url") );
-
-                    testSuiteObj = (JSONObject) parser.parse(blobresult);
-                    String blob  = (String) testSuiteObj.get("content");
-                    byte[] valueDecoded= Base64.decodeBase64(blob.getBytes() );
-                    //System.out.println("Decoded value is " + new String(valueDecoded));
-                    return new String(valueDecoded);
-                }
+            List<String> jsons = new ArrayList<>();
+            for (String f : files) {
+                if (f.endsWith(".json"))
+                    jsons.add(
+                            f.replace(path + System.getProperty("file.separator"), "")
+                             .replaceAll(System.getProperty("file.separator"), "/"));
             }
-        } catch (ParseException e) {e.printStackTrace();}
 
-        return "";
-    }
-
-    public static List<String> getFileNamesForTreeSha(String sha){
-
-        String result = getFromUrl("https://api.github.com/repos/ethereum/tests/git/trees/" + sha + "?recursive=1");
-
-        JSONParser parser = new JSONParser();
-        JSONObject testSuiteObj = null;
-
-        List<String> fileNames = new ArrayList<String>();
-        try {
-            testSuiteObj = (JSONObject) parser.parse(result);
-            JSONArray tree = (JSONArray)testSuiteObj.get("tree");
-
-            for (Object oEntry : tree) {
-                JSONObject entry = (JSONObject) oEntry;
-                String testName = (String) entry.get("path");
-                fileNames.add(testName);
-            }
-        } catch (ParseException e) {e.printStackTrace();}
-
-        return fileNames;
-    }
-
-    public static List<String> listJsonBlobsForTreeSha(String sha) {
+            return jsons;
+        }
 
         String result = getFromUrl("https://api.github.com/repos/ethereum/tests/git/trees/" + sha + "?recursive=1");
 

@@ -18,6 +18,7 @@
 package org.ethereum.core;
 
 import static org.apache.commons.lang3.ArrayUtils.isEmpty;
+import static org.ethereum.datasource.MemSizeEstimator.ByteArrayEstimator;
 import static org.ethereum.util.ByteUtil.EMPTY_BYTE_ARRAY;
 import static org.ethereum.util.ByteUtil.ZERO_BYTE_ARRAY;
 
@@ -30,6 +31,7 @@ import org.ethereum.crypto.ECKey;
 import org.ethereum.crypto.ECKey.ECDSASignature;
 import org.ethereum.crypto.ECKey.MissingPrivateKeyException;
 import org.ethereum.crypto.HashUtil;
+import org.ethereum.datasource.MemSizeEstimator;
 import org.ethereum.util.ByteUtil;
 import org.ethereum.util.RLP;
 import org.ethereum.util.RLPElement;
@@ -100,7 +102,7 @@ public class Transaction {
 
     /* Tx in encoded form */
     protected byte[] rlpEncoded;
-    private byte[] rlpRaw;
+    private byte[] rawHash;
     /* Indicates if this transaction has been parsed
      * from the RLP-encoded data */
     protected boolean parsed = false;
@@ -157,7 +159,8 @@ public class Transaction {
     }
 
 
-    private Integer extractChainIdFromV(BigInteger bv) {
+    private Integer extractChainIdFromRawSignature(BigInteger bv, byte[] r, byte[] s) {
+        if (r == null && s == null) return bv.intValue();  // EIP 86
         if (bv.bitLength() > 31) return Integer.MAX_VALUE; // chainId is limited to 31 bits, longer are not valid for now
         long v = bv.longValue();
         if (v == LOWER_REAL_V || v == (LOWER_REAL_V + 1)) return null;
@@ -210,15 +213,17 @@ public class Transaction {
             if (transaction.get(6).getRLPData() != null) {
                 byte[] vData =  transaction.get(6).getRLPData();
                 BigInteger v = ByteUtil.bytesToBigInteger(vData);
-                this.chainId = extractChainIdFromV(v);
                 byte[] r = transaction.get(7).getRLPData();
                 byte[] s = transaction.get(8).getRLPData();
-                this.signature = ECDSASignature.fromComponents(r, s, getRealV(v));
+                this.chainId = extractChainIdFromRawSignature(v, r, s);
+                if (r != null && s != null) {
+                    this.signature = ECDSASignature.fromComponents(r, s, getRealV(v));
+                }
             } else {
                 logger.debug("RLP encoded tx is not signed!");
             }
+            this.hash = HashUtil.sha3(rlpEncoded);
             this.parsed = true;
-            this.hash = getHash();
         } catch (Exception e) {
             throw new RuntimeException("Error on parsing RLP", e);
         }
@@ -250,16 +255,16 @@ public class Transaction {
 
     public byte[] getHash() {
         if (!isEmpty(hash)) return hash;
-
         rlpParse();
-        byte[] plainMsg = this.getEncoded();
-        return HashUtil.sha3(plainMsg);
+        getEncoded();
+        return hash;
     }
 
     public byte[] getRawHash() {
         rlpParse();
+        if (rawHash != null) return rawHash;
         byte[] plainMsg = this.getEncodedRaw();
-        return HashUtil.sha3(plainMsg);
+        return rawHash = HashUtil.sha3(plainMsg);
     }
 
 
@@ -374,7 +379,7 @@ public class Transaction {
 
     public synchronized byte[] getSender() {
         try {
-            if (sendAddress == null) {
+            if (sendAddress == null && getSignature() != null) {
                 sendAddress = ECKey.signatureToAddress(getRawHash(), getSignature());
             }
             return sendAddress;
@@ -422,7 +427,7 @@ public class Transaction {
                 ", gasPrice=" + ByteUtil.toHexString(gasPrice) +
                 ", gas=" + ByteUtil.toHexString(gasLimit) +
                 ", receiveAddress=" + ByteUtil.toHexString(receiveAddress) +
-                ", sendAddress=" + ByteUtil.toHexString(getSender()) +
+                ", sendAddress=" + ByteUtil.toHexString(getSender())  +
                 ", value=" + ByteUtil.toHexString(value) +
                 ", data=" + dataS +
                 ", signatureV=" + (signature == null ? "" : signature.v) +
@@ -438,7 +443,7 @@ public class Transaction {
     public byte[] getEncodedRaw() {
 
         rlpParse();
-        if (rlpRaw != null) return rlpRaw;
+        byte[] rlpRaw;
 
         // parse null as 0 for nonce
         byte[] nonce = null;
@@ -508,7 +513,7 @@ public class Transaction {
         this.rlpEncoded = RLP.encodeList(nonce, gasPrice, gasLimit,
                 receiveAddress, value, data, v, r, s);
 
-        this.hash = this.getHash();
+        this.hash = HashUtil.sha3(rlpEncoded);
 
         return rlpEncoded;
     }
@@ -568,4 +573,18 @@ public class Transaction {
                 null,
                 chainId);
     }
+
+    public static final MemSizeEstimator<Transaction> MemEstimator = tx ->
+            ByteArrayEstimator.estimateSize(tx.hash) +
+            ByteArrayEstimator.estimateSize(tx.nonce) +
+            ByteArrayEstimator.estimateSize(tx.value) +
+            ByteArrayEstimator.estimateSize(tx.gasPrice) +
+            ByteArrayEstimator.estimateSize(tx.gasLimit) +
+            ByteArrayEstimator.estimateSize(tx.data) +
+            ByteArrayEstimator.estimateSize(tx.sendAddress) +
+            ByteArrayEstimator.estimateSize(tx.rlpEncoded) +
+            ByteArrayEstimator.estimateSize(tx.rawHash) +
+            (tx.chainId != null ? 24 : 0) +
+            (tx.signature != null ? 208 : 0) + // approximate size of signature
+            16; // Object header + ref
 }

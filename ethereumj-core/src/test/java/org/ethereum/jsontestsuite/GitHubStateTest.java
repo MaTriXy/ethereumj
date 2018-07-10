@@ -29,27 +29,28 @@ import java.util.*;
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)
 public class GitHubStateTest {
 
-    static String commitSHA = "400b1a86d4b13b46e8f13ca65dd206bc46120495";
-    static String treeSHA = "8fb6cc05cadb1432e532b7492fc5e5b771ffea58"; // https://github.com/ethereum/tests/tree/develop/GeneralStateTests/
+    static String commitSHA = "7f638829311dfc1d341c1db85d8a891f57fa4da7";
+    static String treeSHA = "d1ece13ebfb2adb27061ae5a6155bd9ed9773d8f"; // https://github.com/ethereum/tests/tree/develop/GeneralStateTests/
     static GitHubJSONTestSuite.Network[] targetNets = {
             GitHubJSONTestSuite.Network.Frontier,
             GitHubJSONTestSuite.Network.Homestead,
             GitHubJSONTestSuite.Network.EIP150,
             GitHubJSONTestSuite.Network.EIP158,
-//            GitHubJSONTestSuite.Network.Byzantium
-
+            GitHubJSONTestSuite.Network.Byzantium
     };
 
     static GeneralStateTestSuite suite;
 
     @BeforeClass
-    public static void setup() {
+    public static void setup() throws IOException {
         suite = new GeneralStateTestSuite(treeSHA, commitSHA, targetNets);
+        SystemProperties.getDefault().setRecordInternalTransactionsData(false);
     }
 
-    @After
-    public void clean() {
+    @AfterClass
+    public static void clean() {
         SystemProperties.getDefault().setBlockchainConfig(MainNetConfig.INSTANCE);
+        SystemProperties.getDefault().setRecordInternalTransactionsData(true);
     }
 
     @Ignore
@@ -58,7 +59,7 @@ public class GitHubStateTest {
     // it reduces impact on GitHub API
     public void stSingleTest() throws IOException {
         GeneralStateTestSuite.runSingle(
-                "stRevertTest/RevertOpcodeInCreateReturns.json", commitSHA, GitHubJSONTestSuite.Network.Byzantium);
+                "stPreCompiledContracts2/modexpRandomInput.json", commitSHA, GitHubJSONTestSuite.Network.Byzantium);
     }
 
     @Test
@@ -96,11 +97,6 @@ public class GitHubStateTest {
 
         Set<String> excluded = new HashSet<>();
         excluded.add("CallRecursiveBombPreCall"); // Max Gas value is pending to be < 2^63
-
-        // the test creates a contract with the same address as existing contract (which is not possible in
-        // live). In this case we need to clear the storage in TransactionExecutor.create
-        // return back to this case when the contract deleting will be implemented
-        excluded.add("createJS_ExampleContract");
 
         suite.runAll("stCallCreateCallCodeTest", excluded);
     }
@@ -151,6 +147,11 @@ public class GitHubStateTest {
     }
 
     @Test
+    public void stPreCompiledContracts2() throws IOException {
+        suite.runAll("stPreCompiledContracts2");
+    }
+
+    @Test
     @Ignore
     public void stMemoryStressTest() throws IOException {
         Set<String> excluded = new HashSet<>();
@@ -161,6 +162,7 @@ public class GitHubStateTest {
     }
 
     @Test
+    @Ignore
     public void stMemoryTest() throws IOException {
         suite.runAll("stMemoryTest");
     }
@@ -220,7 +222,8 @@ public class GitHubStateTest {
     public void stTransactionTest() throws IOException {
         // TODO enable when zero sig Txes comes in
         suite.runAll("stTransactionTest", new HashSet<>(Arrays.asList(
-                "zeroSigTransacrionCreate",
+                "zeroSigTransactionCreate",
+                "zeroSigTransactionCreatePrice0",
                 "zeroSigTransacrionCreatePrice0",
                 "zeroSigTransaction",
                 "zeroSigTransaction0Price",
@@ -265,6 +268,11 @@ public class GitHubStateTest {
     }
 
     @Test
+    public void stZeroKnowledge2() throws IOException {
+        suite.runAll("stZeroKnowledge2");
+    }
+
+    @Test
     public void stCodeSizeLimit() throws IOException {
         suite.runAll("stCodeSizeLimit");
     }
@@ -272,6 +280,26 @@ public class GitHubStateTest {
     @Test
     public void stRandom() throws IOException {
         suite.runAll("stRandom");
+    }
+
+    @Test
+    public void stRandom2() throws IOException {
+        suite.runAll("stRandom2");
+    }
+
+    @Test
+    public void stBadOpcode() throws IOException {
+        suite.runAll("stBadOpcode");
+    }
+
+    @Test
+    public void stNonZeroCallsTest() throws IOException {
+        suite.runAll("stNonZeroCallsTest");
+    }
+
+    @Test
+    public void stCodeCopyTest() throws IOException {
+        suite.runAll("stCodeCopyTest");
     }
 }
 

@@ -34,6 +34,7 @@ import org.ethereum.net.rlpx.MessageCodec;
 import org.ethereum.net.rlpx.Node;
 import org.ethereum.util.BuildInfo;
 import org.ethereum.util.ByteUtil;
+import org.ethereum.util.Utils;
 import org.ethereum.validator.BlockCustomHashRule;
 import org.ethereum.validator.BlockHeaderValidator;
 import org.slf4j.Logger;
@@ -53,6 +54,7 @@ import java.net.URL;
 import java.util.*;
 
 import static org.ethereum.crypto.HashUtil.sha3;
+import static org.ethereum.util.ByteUtil.toHexString;
 
 /**
  * Utility class to retrieve property values from the ethereumj.conf files
@@ -153,8 +155,11 @@ public class SystemProperties {
     private BlockchainNetConfig blockchainConfig;
     private Genesis genesis;
     private Boolean vmTrace;
+    private Boolean recordInternalTransactionsData;
 
     private final ClassLoader classLoader;
+
+    private GenerateNodeIdStrategy generateNodeIdStrategy = null;
 
     public SystemProperties() {
         this(ConfigFactory.empty());
@@ -211,9 +216,15 @@ public class SystemProperties {
                     .resolve();     // substitute variables in config if any
             validateConfig();
 
+            // There could be several files with the same name from other packages,
+            // "version.properties" is a very common name
+            List<InputStream> iStreams = loadResources("version.properties", this.getClass().getClassLoader());
+          for (InputStream is : iStreams) {
             Properties props = new Properties();
-            InputStream is = getClass().getResourceAsStream("/version.properties");
             props.load(is);
+            if (props.getProperty("versionNumber") == null || props.getProperty("databaseVersion") == null) {
+              continue;
+            }
             this.projectVersion = props.getProperty("versionNumber");
             this.projectVersion = this.projectVersion.replaceAll("'", "");
 
@@ -222,10 +233,31 @@ public class SystemProperties {
             this.projectVersionModifier = "master".equals(BuildInfo.buildBranch) ? "RELEASE" : "SNAPSHOT";
 
             this.databaseVersion = Integer.valueOf(props.getProperty("databaseVersion"));
+
+            this.generateNodeIdStrategy = new GetNodeIdFromPropsFile(databaseDir())
+                .withFallback(new GenerateNodeIdRandomly(databaseDir()));
+            break;
+            }
         } catch (Exception e) {
             logger.error("Can't read config.", e);
             throw new RuntimeException(e);
         }
+    }
+
+    /**
+     * Loads resources using given ClassLoader assuming, there could be several resources
+     * with the same name
+     */
+    public static List<InputStream> loadResources(
+            final String name, final ClassLoader classLoader) throws IOException {
+        final List<InputStream> list = new ArrayList<InputStream>();
+        final Enumeration<URL> systemResources =
+                (classLoader == null ? ClassLoader.getSystemClassLoader() : classLoader)
+                        .getResources(name);
+        while (systemResources.hasMoreElements()) {
+            list.add(systemResources.nextElement().openStream());
+        }
+        return list;
     }
 
     public Config getConfig() {
@@ -267,7 +299,7 @@ public class SystemProperties {
      *
      * @param cliOptions -  command line options to take presidency
      */
-    public void overrideParams(Map<String, ? extends Object> cliOptions) {
+    public void overrideParams(Map<String, ?> cliOptions) {
         Config cliConf = ConfigFactory.parseMap(cliOptions);
         overrideParams(cliConf);
     }
@@ -417,6 +449,11 @@ public class SystemProperties {
     @ValidateMe
     public long databaseResetBlock() {
         return config.getLong("database.resetBlock");
+    }
+
+    @ValidateMe
+    public boolean databaseFromBackup() {
+        return config.getBoolean("database.fromBackup");
     }
 
     @ValidateMe
@@ -634,7 +671,7 @@ public class SystemProperties {
     public String privateKey() {
         if (config.hasPath("peer.privateKey")) {
             String key = config.getString("peer.privateKey");
-            if (key.length() != 64) {
+            if (key.length() != 64 || !Utils.isHexEncoded(key)) {
                 throw new RuntimeException("The peer.privateKey needs to be Hex encoded and 32 byte length");
             }
             return key;
@@ -645,28 +682,7 @@ public class SystemProperties {
 
     private String getGeneratedNodePrivateKey() {
         if (generatedNodePrivateKey == null) {
-            try {
-                File file = new File(databaseDir(), "nodeId.properties");
-                Properties props = new Properties();
-                if (file.canRead()) {
-                    try (Reader r = new FileReader(file)) {
-                        props.load(r);
-                    }
-                } else {
-                    ECKey key = new ECKey();
-                    props.setProperty("nodeIdPrivateKey", Hex.toHexString(key.getPrivKeyBytes()));
-                    props.setProperty("nodeId", Hex.toHexString(key.getNodeId()));
-                    file.getParentFile().mkdirs();
-                    try (Writer w = new FileWriter(file)) {
-                        props.store(w, "Generated NodeID. To use your own nodeId please refer to 'peer.privateKey' config option.");
-                    }
-                    logger.info("New nodeID generated: " + props.getProperty("nodeId"));
-                    logger.info("Generated nodeID and its private key stored in " + file);
-                }
-                generatedNodePrivateKey = props.getProperty("nodeIdPrivateKey");
-            } catch (IOException e) {
-                throw new RuntimeException(e);
-            }
+            generatedNodePrivateKey = generateNodeIdStrategy.getNodePrivateKey();
         }
         return generatedNodePrivateKey;
     }
@@ -780,9 +796,25 @@ public class SystemProperties {
     public byte[] getFastSyncPivotBlockHash() {
         if (!config.hasPath("sync.fast.pivotBlockHash")) return null;
         byte[] ret = Hex.decode(config.getString("sync.fast.pivotBlockHash"));
-        if (ret.length != 32) throw new RuntimeException("Invalid block hash length: " + Hex.toHexString(ret));
+        if (ret.length != 32) throw new RuntimeException("Invalid block hash length: " + toHexString(ret));
         return ret;
     }
+
+    @ValidateMe
+    public boolean fastSyncBackupState() {
+        return config.getBoolean("sync.fast.backupState");
+    }
+
+    @ValidateMe
+    public boolean fastSyncSkipHistory() {
+        return config.getBoolean("sync.fast.skipHistory");
+    }
+
+    @ValidateMe
+    public int makeDoneByTimeout() {
+        return config.getInt("sync.makeDoneByTimeout");
+    }
+
 
     @ValidateMe
     public boolean isPublicHomeNode() { return config.getBoolean("peer.discovery.public.home.node");}
@@ -850,7 +882,19 @@ public class SystemProperties {
     public String getCryptoProviderName() {
         return config.getString("crypto.providerName");
     }
-    
+
+    @ValidateMe
+    public boolean recordInternalTransactionsData() {
+        if (recordInternalTransactionsData == null) {
+            recordInternalTransactionsData = config.getBoolean("record.internal.transactions.data");
+        }
+        return recordInternalTransactionsData;
+    }
+
+    public void setRecordInternalTransactionsData(Boolean recordInternalTransactionsData) {
+        this.recordInternalTransactionsData = recordInternalTransactionsData;
+    }
+
     @ValidateMe
     public String getHash256AlgName() {
         return config.getString("crypto.hash.alg256");
@@ -901,5 +945,19 @@ public class SystemProperties {
     public String blocksLoader() {
         return config.hasPath("blocks.loader") ?
                 config.getString("blocks.loader") : DEFAULT_BLOCKS_LOADER;
+    }
+
+    public String githubTestsPath() {
+        return config.hasPath("GitHubTests.testPath") ?
+                config.getString("GitHubTests.testPath") : "";
+    }
+
+    public boolean githubTestsLoadLocal() {
+        return config.hasPath("GitHubTests.testPath") &&
+                !config.getString("GitHubTests.testPath").isEmpty();
+    }
+
+    void setGenerateNodeIdStrategy(GenerateNodeIdStrategy generateNodeIdStrategy) {
+      this.generateNodeIdStrategy = generateNodeIdStrategy;
     }
 }

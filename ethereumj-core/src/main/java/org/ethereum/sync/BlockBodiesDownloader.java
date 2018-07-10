@@ -17,10 +17,11 @@
  */
 package org.ethereum.sync;
 
+import org.ethereum.config.SystemProperties;
 import org.ethereum.core.*;
 import org.ethereum.crypto.HashUtil;
-import org.ethereum.datasource.DataSourceArray;
 import org.ethereum.db.DbFlushManager;
+import org.ethereum.db.HeaderStore;
 import org.ethereum.db.IndexedBlockStore;
 import org.ethereum.net.server.Channel;
 import org.ethereum.util.FastByteComparisons;
@@ -28,7 +29,6 @@ import org.ethereum.validator.BlockHeaderValidator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Scope;
 import org.springframework.stereotype.Component;
 
@@ -53,8 +53,8 @@ public class BlockBodiesDownloader extends BlockDownloader {
     @Autowired
     IndexedBlockStore blockStore;
 
-    @Autowired @Qualifier("headerSource")
-    DataSourceArray<BlockHeader> headerStore;
+    @Autowired
+    HeaderStore headerStore;
 
     @Autowired
     DbFlushManager dbFlushManager;
@@ -68,9 +68,12 @@ public class BlockBodiesDownloader extends BlockDownloader {
     Thread headersThread;
     int downloadCnt = 0;
 
+    private long blockBytesLimit = 32 * 1024 * 1024;
+
     @Autowired
-    public BlockBodiesDownloader(BlockHeaderValidator headerValidator) {
+    public BlockBodiesDownloader(final SystemProperties config, BlockHeaderValidator headerValidator) {
         super(headerValidator);
+        blockBytesLimit = config.blockQueueSize();
     }
 
     public void startImporting() {
@@ -78,25 +81,21 @@ public class BlockBodiesDownloader extends BlockDownloader {
         syncQueue = new SyncQueueImpl(Collections.singletonList(genesis));
         curTotalDiff = genesis.getDifficultyBI();
 
-        headersThread = new Thread("FastsyncHeadersFetchThread") {
-            @Override
-            public void run() {
-                headerLoop();
-            }
-        };
+        headersThread = new Thread(this::headerLoop, "FastsyncHeadersFetchThread");
         headersThread.start();
 
         setHeadersDownload(false);
 
-        init(syncQueue, syncPool);
+        init(syncQueue, syncPool, "BlockBodiesDownloader");
     }
 
     private void headerLoop() {
         while (curBlockIdx < headerStore.size() && !Thread.currentThread().isInterrupted()) {
             List<BlockHeaderWrapper> wrappers = new ArrayList<>();
             List<BlockHeader> emptyBodyHeaders =  new ArrayList<>();
-            for (int i = 0; i < 10000 - syncQueue.getHeadersCount() && curBlockIdx < headerStore.size(); i++) {
-                BlockHeader header = headerStore.get(curBlockIdx++);
+            for (int i = 0; i < getMaxHeadersInQueue() - syncQueue.getHeadersCount() && curBlockIdx < headerStore.size(); i++) {
+                BlockHeader header = headerStore.getHeaderByNumber(curBlockIdx);
+                ++curBlockIdx;
                 wrappers.add(new BlockHeaderWrapper(header, new byte[0]));
 
                 // Skip bodies download for blocks with empty body
@@ -154,6 +153,10 @@ public class BlockBodiesDownloader extends BlockDownloader {
             }
             dbFlushManager.commit();
 
+            estimateBlockSize(blockWrappers);
+            logger.debug("{}: header queue size {} (~{}mb)", name, syncQueue.getHeadersCount(),
+                    syncQueue.getHeadersCount() * getEstimatedBlockSize() / 1024 / 1024);
+
             long c = System.currentTimeMillis();
             if (c - t > 5000) {
                 t = c;
@@ -178,6 +181,16 @@ public class BlockBodiesDownloader extends BlockDownloader {
     @Override
     protected int getBlockQueueFreeSize() {
         return Integer.MAX_VALUE;
+    }
+
+    @Override
+    protected int getMaxHeadersInQueue() {
+        if (getEstimatedBlockSize() == 0) {
+            return getHeaderQueueLimit();
+        }
+
+        int slotsLeft = Math.max((int) (blockBytesLimit / getEstimatedBlockSize()), MAX_IN_REQUEST);
+        return Math.min(slotsLeft + MAX_IN_REQUEST, getHeaderQueueLimit());
     }
 
     public int getDownloadedCount() {

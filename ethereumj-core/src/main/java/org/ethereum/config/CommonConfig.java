@@ -22,13 +22,14 @@ import org.ethereum.crypto.HashUtil;
 import org.ethereum.datasource.*;
 import org.ethereum.datasource.inmem.HashMapDB;
 import org.ethereum.datasource.leveldb.LevelDbDataSource;
+import org.ethereum.datasource.rocksdb.RocksDbDataSource;
 import org.ethereum.db.*;
 import org.ethereum.listener.EthereumListener;
+import org.ethereum.net.eth.handler.Eth63;
 import org.ethereum.sync.FastSyncManager;
 import org.ethereum.validator.*;
 import org.ethereum.vm.DataWord;
 import org.ethereum.vm.program.ProgramPrecompile;
-import org.ethereum.vm.program.invoke.ProgramInvokeFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.config.BeanPostProcessor;
@@ -91,12 +92,32 @@ public class CommonConfig {
         return new RepositoryRoot(stateSource(), stateRoot);
     }
 
+    /**
+     * A source of nodes for state trie and all contract storage tries. <br/>
+     * This source provides contract code too. <br/><br/>
+     *
+     * Picks node by 16-bytes prefix of its key. <br/>
+     * Within {@link NodeKeyCompositor} this source is a part of ref counting workaround<br/><br/>
+     *
+     * <b>Note:</b> is eligible as a public node provider, like in {@link Eth63};
+     * {@link StateSource} is intended for inner usage only
+     *
+     * @see NodeKeyCompositor
+     * @see RepositoryRoot#RepositoryRoot(Source, byte[])
+     * @see Eth63
+     */
+    @Bean
+    public Source<byte[], byte[]> trieNodeSource() {
+        DbSource<byte[]> db = blockchainDB();
+        Source<byte[], byte[]> src = new PrefixLookupSource<>(db, NodeKeyCompositor.PREFIX_BYTES);
+        return new XorDataSource<>(src, HashUtil.sha3("state".getBytes()));
+    }
 
     @Bean
     public StateSource stateSource() {
         fastSyncCleanUp();
         StateSource stateSource = new StateSource(blockchainSource("state"),
-                systemProperties().databasePruneDepth() >= 0, systemProperties().getConfig().getInt("cache.maxStateBloomSize") << 20);
+                systemProperties().databasePruneDepth() >= 0);
 
         dbFlushManager().addCache(stateSource.getWriteCache());
 
@@ -133,21 +154,27 @@ public class CommonConfig {
         return ret;
     }
 
+    public DbSource<byte[]> keyValueDataSource(String name) {
+        return keyValueDataSource(name, DbSettings.DEFAULT);
+    }
+
     @Bean
     @Scope("prototype")
     @Primary
-    public DbSource<byte[]> keyValueDataSource(String name) {
+    public DbSource<byte[]> keyValueDataSource(String name, DbSettings settings) {
         String dataSource = systemProperties().getKeyValueDataSource();
         try {
             DbSource<byte[]> dbSource;
             if ("inmem".equals(dataSource)) {
                 dbSource = new HashMapDB<>();
-            } else {
-                dataSource = "leveldb";
+            } else if ("leveldb".equals(dataSource)){
                 dbSource = levelDbDataSource();
+            } else {
+                dataSource = "rocksdb";
+                dbSource = rocksDbDataSource();
             }
             dbSource.setName(name);
-            dbSource.init();
+            dbSource.init(settings);
             dbSources.add(dbSource);
             return dbSource;
         } finally {
@@ -161,9 +188,16 @@ public class CommonConfig {
         return new LevelDbDataSource();
     }
 
+    @Bean
+    @Scope("prototype")
+    protected RocksDbDataSource rocksDbDataSource() {
+        return new RocksDbDataSource();
+    }
+
     public void fastSyncCleanUp() {
         byte[] fastsyncStageBytes = blockchainDB().get(FastSyncManager.FASTSYNC_DB_KEY_SYNC_STAGE);
         if (fastsyncStageBytes == null) return; // no uncompleted fast sync
+        if (!systemProperties().blocksLoader().isEmpty()) return; // blocks loader enabled
 
         EthereumListener.SyncState syncStage = EthereumListener.SyncState.values()[fastsyncStageBytes[0]];
 
@@ -180,24 +214,35 @@ public class CommonConfig {
     }
 
     private void resetDataSource(Source source) {
-        if (source instanceof LevelDbDataSource) {
-            ((LevelDbDataSource) source).reset();
+        if (source instanceof DbSource) {
+            ((DbSource) source).reset();
         } else {
-            throw new Error("Cannot cleanup non-LevelDB database");
+            throw new Error("Cannot cleanup non-db Source");
         }
     }
 
     @Bean
     @Lazy
-    public DataSourceArray<BlockHeader> headerSource() {
-        DbSource<byte[]> dataSource = keyValueDataSource("headers");
-        BatchSourceWriter<byte[], byte[]> batchSourceWriter = new BatchSourceWriter<>(dataSource);
-        WriteCache.BytesKey<byte[]> writeCache = new WriteCache.BytesKey<>(batchSourceWriter, WriteCache.CacheType.SIMPLE);
-        writeCache.withSizeEstimators(MemSizeEstimator.ByteArrayEstimator, MemSizeEstimator.ByteArrayEstimator);
-        writeCache.setFlushSource(true);
-        ObjectDataSource<BlockHeader> objectDataSource = new ObjectDataSource<>(dataSource, Serializers.BlockHeaderSerializer, 0);
-        DataSourceArray<BlockHeader> dataSourceArray = new DataSourceArray<>(objectDataSource);
-        return dataSourceArray;
+    public DbSource<byte[]> headerSource() {
+        return keyValueDataSource("headers");
+    }
+
+    @Bean
+    @Lazy
+    public HeaderStore headerStore() {
+        DbSource<byte[]> dataSource = headerSource();
+
+        WriteCache.BytesKey<byte[]> cache = new WriteCache.BytesKey<>(
+                new BatchSourceWriter<>(dataSource), WriteCache.CacheType.SIMPLE);
+        cache.setFlushSource(true);
+        dbFlushManager().addCache(cache);
+
+        HeaderStore headerStore = new HeaderStore();
+        Source<byte[], byte[]> headers = new XorDataSource<>(cache, HashUtil.sha3("header".getBytes()));
+        Source<byte[], byte[]> index = new XorDataSource<>(cache, HashUtil.sha3("index".getBytes()));
+        headerStore.init(index, headers);
+
+        return headerStore;
     }
 
     @Bean
@@ -226,7 +271,11 @@ public class CommonConfig {
 
     @Bean
     public DbSource<byte[]> blockchainDB() {
-        return keyValueDataSource("blockchain");
+        DbSettings settings = DbSettings.newInstance()
+                .withMaxOpenFiles(systemProperties().getConfig().getInt("database.maxOpenFiles"))
+                .withMaxThreads(Math.max(1, Runtime.getRuntime().availableProcessors() / 2));
+
+        return keyValueDataSource("blockchain", settings);
     }
 
     @Bean

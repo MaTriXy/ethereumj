@@ -17,13 +17,14 @@
  */
 package org.ethereum.datasource.inmem;
 
+import org.ethereum.datasource.DbSettings;
 import org.ethereum.datasource.DbSource;
 import org.ethereum.util.ALock;
 import org.ethereum.util.ByteArrayMap;
+import org.ethereum.util.FastByteComparisons;
 
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
@@ -88,6 +89,9 @@ public class HashMapDB<V> implements DbSource<V> {
     public void init() {}
 
     @Override
+    public void init(DbSettings settings) {}
+
+    @Override
     public boolean isAlive() {
         return true;
     }
@@ -99,6 +103,25 @@ public class HashMapDB<V> implements DbSource<V> {
     public Set<byte[]> keys() {
         try (ALock l = readLock.lock()) {
             return getStorage().keySet();
+        }
+    }
+
+    @Override
+    public void reset() {
+        try (ALock l = writeLock.lock()) {
+            storage.clear();
+        }
+    }
+
+    @Override
+    public V prefixLookup(byte[] key, int prefixBytes) {
+        try (ALock l = readLock.lock()) {
+            for (Map.Entry<byte[], V> e : storage.entrySet())
+                if (FastByteComparisons.compareTo(key, 0, prefixBytes, e.getKey(), 0, prefixBytes) == 0) {
+                    return e.getValue();
+                }
+
+            return null;
         }
     }
 

@@ -189,7 +189,7 @@ public class ProgramResult {
 
     public void merge(ProgramResult another) {
         addInternalTransactions(another.getInternalTransactions());
-        if (another.getException() == null && !isRevert()) {
+        if (another.getException() == null && !another.isRevert()) {
             addDeleteAccounts(another.getDeleteAccounts());
             addLogInfos(another.getLogInfoList());
             addFutureRefund(another.getFutureRefund());
@@ -197,7 +197,7 @@ public class ProgramResult {
         }
     }
     
-    public static ProgramResult empty() {
+    public static ProgramResult createEmpty() {
         ProgramResult result = new ProgramResult();
         result.setHReturn(EMPTY_BYTE_ARRAY);
         return result;

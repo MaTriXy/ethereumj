@@ -1,3 +1,20 @@
+/*
+ * Copyright (c) [2016] [ <ether.camp> ]
+ * This file is part of the ethereumJ library.
+ *
+ * The ethereumJ library is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * The ethereumJ library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with the ethereumJ library. If not, see <http://www.gnu.org/licenses/>.
+ */
 package org.ethereum.jsontestsuite.suite;
 
 import org.ethereum.config.SystemProperties;
@@ -12,6 +29,7 @@ import java.util.*;
 
 import static org.ethereum.jsontestsuite.suite.JSONReader.listJsonBlobsForTreeSha;
 import static org.ethereum.jsontestsuite.suite.JSONReader.loadJSONFromCommit;
+import static org.ethereum.jsontestsuite.suite.JSONReader.loadJSONsFromCommit;
 
 /**
  * @author Mikhail Kalinin
@@ -24,17 +42,23 @@ public class BlockchainTestSuite {
     private static final String TEST_ROOT = "BlockchainTests/";
 
     String commitSHA;
+    String subDir = "";
     List<String> files;
     GitHubJSONTestSuite.Network[] networks;
 
-    public BlockchainTestSuite(String treeSHA, String commitSHA, GitHubJSONTestSuite.Network[] networks) {
-        files = listJsonBlobsForTreeSha(treeSHA);
+    public BlockchainTestSuite(String treeSHA, String commitSHA, GitHubJSONTestSuite.Network[] networks) throws IOException {
+        files = listJsonBlobsForTreeSha(treeSHA, TEST_ROOT);
         this.commitSHA = commitSHA;
         this.networks = networks;
     }
 
-    public BlockchainTestSuite(String treeSHA, String commitSHA) {
+    public BlockchainTestSuite(String treeSHA, String commitSHA) throws IOException {
         this(treeSHA, commitSHA, GitHubJSONTestSuite.Network.values());
+    }
+
+    public void setSubDir(String subDir) {
+        if (!subDir.endsWith("/")) subDir = subDir + "/";
+        this.subDir = subDir;
     }
 
     private static void run(List<String> checkFiles,
@@ -44,8 +68,12 @@ public class BlockchainTestSuite {
         if (checkFiles.isEmpty()) return;
 
         List<BlockTestSuite> suites = new ArrayList<>();
+        List<String> filenames = new ArrayList<>();
         for (String file : checkFiles) {
-            String json = loadJSONFromCommit(TEST_ROOT + file, commitSHA);
+            filenames.add(TEST_ROOT + file);
+        }
+        List<String> jsons = loadJSONsFromCommit(filenames, commitSHA);
+        for (String json : jsons) {
             suites.add(new BlockTestSuite(json));
         }
 
@@ -110,7 +138,11 @@ public class BlockchainTestSuite {
 
         List<String> testCaseFiles = new ArrayList<>();
         for (String file : files) {
-            if (file.startsWith(testCaseRoot + "/")) testCaseFiles.add(file);
+            if (file.startsWith(testCaseRoot + "/")) {
+                testCaseFiles.add(subDir + file);
+            } else if (file.startsWith(subDir + testCaseRoot + "/")) {
+                testCaseFiles.add(file);
+            }
         }
 
         Set<String> toExclude = new HashSet<>();

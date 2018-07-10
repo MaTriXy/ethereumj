@@ -1,3 +1,20 @@
+/*
+ * Copyright (c) [2016] [ <ether.camp> ]
+ * This file is part of the ethereumJ library.
+ *
+ * The ethereumJ library is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * The ethereumJ library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with the ethereumJ library. If not, see <http://www.gnu.org/licenses/>.
+ */
 package org.ethereum.jsontestsuite.suite;
 
 import org.ethereum.jsontestsuite.GitHubJSONTestSuite;
@@ -11,6 +28,7 @@ import java.util.*;
 
 import static org.ethereum.jsontestsuite.suite.JSONReader.listJsonBlobsForTreeSha;
 import static org.ethereum.jsontestsuite.suite.JSONReader.loadJSONFromCommit;
+import static org.ethereum.jsontestsuite.suite.JSONReader.loadJSONsFromCommit;
 
 /**
  * @author Mikhail Kalinin
@@ -27,8 +45,8 @@ public class GeneralStateTestSuite {
     List<String> files;
     GitHubJSONTestSuite.Network[] networks;
 
-    public GeneralStateTestSuite(String treeSHA, String commitSHA, GitHubJSONTestSuite.Network[] networks) {
-        files = listJsonBlobsForTreeSha(treeSHA);
+    public GeneralStateTestSuite(String treeSHA, String commitSHA, GitHubJSONTestSuite.Network[] networks) throws IOException {
+        files = listJsonBlobsForTreeSha(treeSHA, STATE_TEST_ROOT);
         this.commitSHA = commitSHA;
         this.networks = networks;
     }
@@ -40,8 +58,13 @@ public class GeneralStateTestSuite {
         if (checkFiles.isEmpty()) return;
 
         List<StateTestData> suites = new ArrayList<>();
+        List<String> filenames = new ArrayList<>();
         for (String file : checkFiles) {
-            String json = loadJSONFromCommit(STATE_TEST_ROOT + file, commitSHA);
+            filenames.add(STATE_TEST_ROOT + file);
+        }
+
+        List<String> jsons = loadJSONsFromCommit(filenames, commitSHA);
+        for (String json : jsons) {
             suites.add(new StateTestData(json));
         }
 

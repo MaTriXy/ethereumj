@@ -132,7 +132,7 @@ public class PendingStateLongRunTest {
 
         blockchain.byTest = true;
 
-        PendingStateImpl pendingState = new PendingStateImpl(new EthereumListenerAdapter(), blockchain);
+        PendingStateImpl pendingState = new PendingStateImpl(new EthereumListenerAdapter());
 
         pendingState.setBlockchain(blockchain);
         blockchain.setPendingState(pendingState);
@@ -142,10 +142,10 @@ public class PendingStateLongRunTest {
 
         track.commit();
 
-        blockStore.saveBlock(Genesis.getInstance(), Genesis.getInstance().getCumulativeDifficulty(), true);
+        blockStore.saveBlock(Genesis.getInstance(), Genesis.getInstance().getDifficultyBI(), true);
 
         blockchain.setBestBlock(Genesis.getInstance());
-        blockchain.setTotalDifficulty(Genesis.getInstance().getCumulativeDifficulty());
+        blockchain.setTotalDifficulty(Genesis.getInstance().getDifficultyBI());
 
         return blockchain;
     }
