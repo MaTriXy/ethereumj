@@ -17,8 +17,8 @@
  */
 package org.ethereum.jsontestsuite;
 
-import org.codehaus.jackson.map.ObjectMapper;
-import org.codehaus.jackson.type.JavaType;
+import com.fasterxml.jackson.databind.JavaType;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.ethereum.config.BlockchainNetConfig;
 import org.ethereum.config.SystemProperties;
 import org.ethereum.config.blockchain.*;
@@ -30,10 +30,8 @@ import org.ethereum.jsontestsuite.suite.runners.TransactionTestRunner;
 import org.json.simple.JSONObject;
 import org.json.simple.parser.JSONParser;
 import org.json.simple.parser.ParseException;
-
 import org.junit.Assert;
 import org.junit.Assume;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -321,12 +319,15 @@ public class GitHubJSONTestSuite {
         EIP158,
         Byzantium,
         Constantinople,
+        ConstantinopleFix,
 
         // Transition networks
         FrontierToHomesteadAt5,
         HomesteadToDaoAt5,
         HomesteadToEIP150At5,
-        EIP158ToByzantiumAt5;
+        EIP158ToByzantiumAt5,
+        ByzantiumToConstantinopleAt5,
+        ByzantiumToConstantinopleFixAt5;
 
         public BlockchainNetConfig getConfig() {
             switch (this) {
@@ -336,6 +337,8 @@ public class GitHubJSONTestSuite {
                 case EIP150:    return new Eip150HFConfig(new DaoHFConfig());
                 case EIP158:    return new Eip160HFConfig(new DaoHFConfig());
                 case Byzantium:    return new ByzantiumConfig(new DaoHFConfig());
+                case Constantinople: return new ConstantinopleConfig(new DaoHFConfig());
+                case ConstantinopleFix: return new PetersburgConfig(new DaoHFConfig());
 
                 case FrontierToHomesteadAt5: return new BaseNetConfig() {{
                     add(0, new FrontierConfig());
@@ -355,6 +358,16 @@ public class GitHubJSONTestSuite {
                 case EIP158ToByzantiumAt5: return new BaseNetConfig() {{
                     add(0, new Eip160HFConfig(new HomesteadConfig()));
                     add(5, new ByzantiumConfig(new HomesteadConfig()));
+                }};
+
+                case ByzantiumToConstantinopleAt5: return new BaseNetConfig() {{
+                    add(0, new ByzantiumConfig(new HomesteadConfig()));
+                    add(5, new ConstantinopleConfig(new HomesteadConfig()));
+                }};
+
+                case ByzantiumToConstantinopleFixAt5: return new BaseNetConfig() {{
+                    add(0, new ByzantiumConfig(new HomesteadConfig()));
+                    add(5, new PetersburgConfig(new HomesteadConfig()));
                 }};
 
                 default: throw new IllegalArgumentException("Unknown network value: " + this.name());
